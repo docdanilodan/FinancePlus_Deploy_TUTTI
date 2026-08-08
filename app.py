@@ -1746,7 +1746,29 @@ def page_settings() -> None:
 # -----------------------------------------------------------------------------
 
 
+def require_access_password() -> bool:
+    try:
+        expected = st.secrets.get("ACCESS_PASSWORD", "")
+    except Exception:
+        expected = ""
+    if not expected:
+        return True
+    if st.session_state.get("_access_ok"):
+        return True
+    st.title("🔒 Accesso protetto")
+    pwd = st.text_input("Password di accesso", type="password")
+    if st.button("Entra"):
+        if pwd == expected:
+            st.session_state["_access_ok"] = True
+            st.rerun()
+        else:
+            st.error("Password errata.")
+    return False
+
+
 def main() -> None:
+    if not require_access_password():
+        return
     ensure_dirs()
     init_db()
     inject_css()
