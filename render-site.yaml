@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: financeplus-site-platform
+    runtime: python
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /health
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: BASE_URL
+        value: https://financeplus.tech
+      - key: ADMIN_EMAIL
+        value: d.dangelo@financeplus.tech
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CONTACT_EMAIL
+        value: d.dangelo@financeplus.tech
+      - key: PHONE
+        value: +393291135692
+      - key: MAX_UPLOAD_MB
+        value: 10
+      - key: SESSION_HTTPS_ONLY
+        value: 1
