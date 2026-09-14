@@ -1,47 +1,90 @@
-# FinancePlus Streamlit Cartella Deploy
+# SITO_FINANCE+TECH - FinancePlus Platform ULTIMATE 4.0 consolidata
 
-Cartella pronta per GitHub e Streamlit Cloud della **FinancePlus Master Suite PRO**.
+Questa e la cartella eseguibile del progetto CHAT MASTER del 09/09/2026. Il brand pubblico resta **FinancePlus.tech**. Per la procedura completa usare `../02_GUIDE/Guida_Pubblicazione_SITO_FINANCE+TECH.pdf`.
 
-## File principali
+**Architettura unica della release:** Aruba = dominio/posta; Render Frankfurt = applicazione; FinancePlus Cloud / Neon = PostgreSQL.
 
-| File / cartella | Funzione |
-|---|---|
-| `app.py` | File principale Streamlit. Contiene dashboard, Cliente 360, documenti, Cerca Azienda, scoring, Business Plan, note/calendario, report e backup. |
-| `requirements.txt` | Dipendenze Python da installare prima dell'avvio o richieste da Streamlit Cloud. |
-| `.streamlit/config.toml` | Tema grafico blu/rame, layout e impostazioni server. |
-| `.streamlit/secrets.toml.example` | Modello credenziali senza password reali. Copiare in `secrets.toml` solo in locale; su cloud usare Settings > Secrets. |
-| `assets/` | Logo FinancePlus in formato PNG/ICO. |
-| `financeplus_data/` | Cartella dati locale creata/gestita dall'app: database, clienti, report, backup, log. Non caricare dati reali su repository pubblico. |
-| `uploads/`, `reports/`, `data/` | Cartelle compatibili con le versioni Streamlit precedenti e con deploy ordinato. |
-| `.gitignore` | Protegge database, dati riservati, cache Python e secrets reali. |
+---
+
+Versione unica del sito FinancePlus.tech + Area Privata + gestionale + pre-fattibilita Invoice Trading AI.
+
+## Contenuto
+
+### Sito pubblico
+- Home premium FinancePlus.tech
+- Servizi
+- Metodo
+- Piattaforma
+- Insights
+- Chi siamo
+- Contatti con acquisizione lead
+- Registrazione Area Clienti con approvazione
+- Login protetto
+
+### Area privata / gestionale
+Grafica progettata sul modello delle schermate fornite: sidebar blu notte, pannelli bianchi, accenti rame, badge di stato, KPI e workflow.
+
+- Dashboard
+- Nuovo Cliente
+- Clienti Salvati
+- Documenti
+- Analisi AI
+- Scoring Piattaforme
+- Report
+- Impostazioni
+
+### Invoice Trading Pre-Fattibilita AI
+- caricamento documenti multiplo
+- classificazione documentale per nome/tipologia
+- score per Cedente, Debitore, Fattura, Centrale Rischi e Documentazione
+- ranking piattaforme
+- motivazione AI dimostrativa
+- punti di forza / elementi di attenzione
+- report PDF scaricabile
 
 ## Avvio locale
 
+### Windows
+1. installare Python 3.12+
+2. estrarre la cartella
+3. eseguire `START_WINDOWS.bat`
+4. aprire `http://127.0.0.1:8000`
+
+### Manuale
 ```bash
-cd FinancePlus_Streamlit_Cartella
-python -m pip install -r requirements.txt
-streamlit run app.py
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-## Deploy Streamlit Cloud
+## Anteprima locale
+Con `SEED_DEMO=1`:
+- email: `d.dangelo@financeplus.tech`
+- password: `FinancePlusDemo2026!`
 
-1. Creare un repository GitHub.
-2. Caricare `app.py`, `requirements.txt`, `.streamlit/config.toml`, `.gitignore`, `README.md`, `assets/` e logo.
-3. Non caricare database, documenti riservati, cartelle piene di file cliente o `secrets.toml` reale.
-4. Su Streamlit Cloud scegliere **New app**.
-5. Impostare **Main file path**: `app.py`.
-6. Inserire eventuali credenziali in **Settings > Secrets**.
+La password demo e solo per test locale. In produzione impostare `SEED_DEMO=0` e definire `ADMIN_PASSWORD` come variabile ambiente.
 
-## Moduli inclusi nell'app
+## Produzione
+Architettura consigliata del progetto:
+- Aruba: dominio e posta
+- Render (Frankfurt): applicazione FastAPI
+- FinancePlus Cloud / Neon: PostgreSQL
 
-- Dashboard professionale blu/rame con KPI e azioni rapide.
-- Cliente 360 con anagrafica, fascicolo, documenti, note, richieste e stato pratica.
-- Import documenti con hash SHA-256 anti-duplicato e cartella temporanea da verificare.
-- Cerca Azienda su mail, allegati, oggetto e testo documento.
-- Archivio cliente/mese/tipologia con log operativo.
-- Centrale Rischi, PHANTOM score, MCC/DSCR e Business Plan sintetico.
-- Report PDF, export CSV e backup ZIP.
+Vedi `DEPLOY_RENDER_ARUBA_NEON.md`.
 
-## Nota di sicurezza
+## Sicurezza prima di usare dati reali
+Questa release e pronta per collaudo tecnico e pubblicazione controllata. Prima di caricare documenti reali:
+- `APP_ENV=production`
+- HTTPS attivo
+- `SECRET_KEY` casuale e lunga
+- `ADMIN_PASSWORD` diversa dalla demo
+- PostgreSQL/Neon via SSL
+- backup verificato
+- object storage privato S3 per documenti, se si supera l'MVP iniziale
+- 2FA almeno per gli amministratori
+- policy privacy, retention e audit definite
 
-Prima dell'uso su dati reali vanno verificati: connessioni IMAP, gestione credenziali, backup, log, privacy, ruoli utente e policy di conservazione documentale.
+## Nota sulle piattaforme Invoice Trading
+I nomi e gli score presenti nella demo sono configurabili e servono a rappresentare il motore di ranking. Prima dell'uso commerciale, requisiti, disponibilita, pricing e regole di ammissibilita delle singole piattaforme devono essere aggiornati con fonti ufficiali.

@@ -1,6 +1,7 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+sqlalchemy==2.0.43
 python-multipart==0.0.20
-sqlalchemy==2.0.36
 itsdangerous==2.2.0
-psycopg[binary]==3.2.3
+psycopg[binary]==3.2.9
+reportlab==4.4.3

@@ -1,0 +1,28 @@
+Test base ULTIMATE 4.0 (08/09/2026):
+- compilazione Python: OK
+- import FastAPI: OK
+- /health: HTTP 200
+- Home pubblica: HTTP 200
+- login demo: HTTP 303 -> /app
+- dashboard privata: HTTP 200
+- scoring piattaforme: HTTP 200
+
+Ricontrollo consolidamento SITO_FINANCE+TECH (09/09/2026):
+- python -m py_compile app.py: OK
+- import applicazione in development: OK
+- /health: HTTP 200
+- Home: HTTP 200
+- pagina login: HTTP 200
+- login demo locale: HTTP 303 -> /app
+- dashboard privata: HTTP 200
+- scoring cliente demo: HTTP 200
+- generazione Report PDF: HTTP 200, application/pdf
+
+Modifiche di hardening introdotte nel consolidamento:
+- blocco avvio production con SECRET_KEY assente/debole;
+- blocco avvio production con ADMIN_PASSWORD demo/assente;
+- blocco avvio production con SQLite;
+- bootstrap amministratore da variabili ambiente;
+- cookie sessione HTTPS in production;
+- header di sicurezza browser;
+- controllo same-origin sulle richieste state-changing in production.

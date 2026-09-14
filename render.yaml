@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: financeplus-tech
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SEED_DEMO
+        value: "0"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        value: d.dangelo@financeplus.tech
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CONTACT_EMAIL
+        value: d.dangelo@financeplus.tech
+      - key: PHONE
+        value: +39 329 113 5692
+      - key: BASE_URL
+        value: https://financeplus.tech

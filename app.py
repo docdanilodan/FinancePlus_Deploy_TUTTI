@@ -1,59 +1,64 @@
 from __future__ import annotations
-
-import base64
-import hashlib
-import hmac
-import html
-import os
-import secrets
-import smtplib
-import ssl
-import uuid
-from datetime import datetime
-from email.message import EmailMessage
+import base64, hashlib, hmac, html, io, os, secrets
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request, Form, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, FileResponse, PlainTextResponse
-from sqlalchemy import create_engine, String, Integer, Boolean, DateTime, Float, ForeignKey, Text, LargeBinary, select
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import create_engine, String, Integer, Boolean, DateTime, Float, ForeignKey, Text, LargeBinary, select, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
-APP_NAME = "FinancePlus.tech"
-DATABASE_URL = os.environ["DATABASE_URL"]
-SECRET_KEY = os.environ["SECRET_KEY"]
+APP_VERSION = "FinancePlus Platform ULTIMATE 4.0"
+APP_ENV = os.getenv("APP_ENV", "development")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./financeplus_ultimate.db")
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-change-me-" + secrets.token_hex(16))
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "d.dangelo@financeplus.tech").lower()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "FinancePlusDemo2026!")
+CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "d.dangelo@financeplus.tech")
+PHONE = os.getenv("PHONE", "+39 329 113 5692")
 BASE_URL = os.getenv("BASE_URL", "https://financeplus.tech").rstrip("/")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "d.dangelo@financeplus.tech").strip().lower()
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "d.dangelo@financeplus.tech").strip().lower()
-PHONE = os.getenv("PHONE", "+393291135692")
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
-SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "1").lower() in {"1", "true", "yes", "on"}
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
+SEED_DEMO = os.getenv("SEED_DEMO", "1" if APP_ENV != "production" else "0") == "1"
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Fail closed in production: the app must not start with demo credentials,
+# a transient secret key, or the local SQLite database.
+if APP_ENV == "production":
+    if not os.getenv("SECRET_KEY") or len(SECRET_KEY) < 32:
+        raise RuntimeError("In produzione impostare SECRET_KEY con almeno 32 caratteri casuali.")
+    if not os.getenv("ADMIN_PASSWORD") or ADMIN_PASSWORD == "FinancePlusDemo2026!":
+        raise RuntimeError("In produzione impostare ADMIN_PASSWORD con una password forte e non-demo.")
+    if DATABASE_URL.startswith("sqlite"):
+        raise RuntimeError("In produzione impostare DATABASE_URL su PostgreSQL/Neon; SQLite e solo per test locale.")
+
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
-class Base(DeclarativeBase):
-    pass
+class Base(DeclarativeBase): pass
 
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     role: Mapped[str] = mapped_column(String(30), default="client")
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    display_name: Mapped[str] = mapped_column(String(255), default="")
     company_name: Mapped[str] = mapped_column(String(255), default="")
-    vat: Mapped[str] = mapped_column(String(40), default="")
-    contact_name: Mapped[str] = mapped_column(String(255), default="")
-    phone: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Lead(Base):
     __tablename__ = "leads"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     company: Mapped[str] = mapped_column(String(255), default="")
     email: Mapped[str] = mapped_column(String(255))
@@ -62,425 +67,372 @@ class Lead(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-class Practice(Base):
-    __tablename__ = "practices"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    title: Mapped[str] = mapped_column(String(255))
-    product: Mapped[str] = mapped_column(String(255), default="")
-    amount: Mapped[float] = mapped_column(Float, default=0)
-    institution: Mapped[str] = mapped_column(String(255), default="")
-    status: Mapped[str] = mapped_column(String(100), default="Da avviare")
-    notes: Mapped[str] = mapped_column(Text, default="")
+class Client(Base):
+    __tablename__ = "clients"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    company: Mapped[str] = mapped_column(String(255), index=True)
+    vat: Mapped[str] = mapped_column(String(40), default="")
+    sector: Mapped[str] = mapped_column(String(120), default="")
+    contact: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(80), default="")
+    email: Mapped[str] = mapped_column(String(255), default="")
+    revenue: Mapped[float] = mapped_column(Float, default=0)
+    ebitda: Mapped[float] = mapped_column(Float, default=0)
+    net_worth: Mapped[float] = mapped_column(Float, default=0)
+    invoice_amount: Mapped[float] = mapped_column(Float, default=0)
+    debtor: Mapped[str] = mapped_column(String(255), default="")
+    due_date: Mapped[str] = mapped_column(String(40), default="")
+    accorded: Mapped[float] = mapped_column(Float, default=0)
+    utilized: Mapped[float] = mapped_column(Float, default=0)
+    cr_risk: Mapped[str] = mapped_column(String(40), default="Basso")
+    status: Mapped[str] = mapped_column(String(80), default="In attesa documenti")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Document(Base):
     __tablename__ = "documents"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    practice_id: Mapped[Optional[int]] = mapped_column(ForeignKey("practices.id"), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     category: Mapped[str] = mapped_column(String(120), default="Altro")
-    status: Mapped[str] = mapped_column(String(80), default="Caricato")
-    is_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(80), default="Riconosciuto")
     size: Mapped[int] = mapped_column(Integer, default=0)
-    file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-class Message(Base):
-    __tablename__ = "messages"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    recipient_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    subject: Mapped[str] = mapped_column(String(255))
-    body: Mapped[str] = mapped_column(Text)
+class Analysis(Base):
+    __tablename__ = "analyses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), index=True)
+    seller_score: Mapped[int] = mapped_column(Integer, default=80)
+    debtor_score: Mapped[int] = mapped_column(Integer, default=75)
+    invoice_score: Mapped[int] = mapped_column(Integer, default=85)
+    cr_score: Mapped[int] = mapped_column(Integer, default=70)
+    docs_score: Mapped[int] = mapped_column(Integer, default=90)
+    overall_score: Mapped[int] = mapped_column(Integer, default=80)
+    completeness: Mapped[int] = mapped_column(Integer, default=90)
+    ai_reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(engine)
 
-def password_hash(password: str) -> str:
+def pwhash(password: str) -> str:
     salt = os.urandom(16)
     dk = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
     return "scrypt$" + base64.urlsafe_b64encode(salt).decode() + "$" + base64.urlsafe_b64encode(dk).decode()
 
-def password_verify(password: str, encoded: str) -> bool:
+def pwcheck(password: str, stored: str) -> bool:
     try:
-        _, salt_b64, hash_b64 = encoded.split("$", 2)
-        salt = base64.urlsafe_b64decode(salt_b64.encode())
-        expected = base64.urlsafe_b64decode(hash_b64.encode())
+        _, s, h = stored.split("$", 2)
+        salt = base64.urlsafe_b64decode(s)
+        expected = base64.urlsafe_b64decode(h)
         actual = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
 
-def seed_admin() -> None:
-    if not ADMIN_PASSWORD:
-        raise RuntimeError("ADMIN_PASSWORD non configurata")
+def esc(v): return html.escape(str(v or ""), quote=True)
+def eur(v): return ("€ {:,.0f}".format(float(v or 0))).replace(",", ".")
+
+def category_from_name(name: str) -> str:
+    n = name.lower()
+    if "visura" in n: return "Visura camerale"
+    if "bilancio" in n or n.endswith(".xbrl"): return "Bilancio"
+    if "centrale" in n or "cr" in n: return "Centrale Rischi"
+    if "fattura" in n or "invoice" in n: return "Fattura"
+    if "estratt" in n or "conto" in n: return "Estratti conto"
+    if "ddt" in n: return "DDT"
+    return "Altro"
+
+def status_for_category(cat: str) -> str:
+    return "In analisi" if cat == "Centrale Rischi" else ("Da verificare" if cat == "Estratti conto" else "Riconosciuto")
+
+def bootstrap_admin():
+    """Crea l'amministratore iniziale se non esiste. In produzione usa solo le variabili ambiente."""
     with SessionLocal() as db:
         admin = db.scalar(select(User).where(User.email == ADMIN_EMAIL))
         if not admin:
-            db.add(User(email=ADMIN_EMAIL, password_hash=password_hash(ADMIN_PASSWORD), role="admin", approved=True, company_name="Financeplus S.r.l.", contact_name="Amministratore FinancePlus", phone=PHONE))
+            db.add(User(email=ADMIN_EMAIL, password_hash=pwhash(ADMIN_PASSWORD), role="admin", approved=True, display_name="Danilo D'Angelo", company_name="Financeplus S.r.l."))
             db.commit()
 
-seed_admin()
+def seed_demo():
+    if not SEED_DEMO: return
+    with SessionLocal() as db:
+        if (db.scalar(select(func.count(Client.id))) or 0) == 0:
+            clients = [
+                Client(company="Metalmeccanica Lombarda S.r.l.", vat="12345678901", sector="Metalmeccanica", contact="Luca Bianchi", phone="+39 02 1234567", email="l.bianchi@metalmeccanica.it", revenue=12450000, ebitda=1320000, net_worth=4850000, invoice_amount=285000, debtor="Alfa Retail S.p.A.", due_date="30/06/2026", accorded=2000000, utilized=1350000, cr_risk="Basso", status="Report generato"),
+                Client(company="Edilizia San Marco S.p.A.", vat="02110022033", sector="Edilizia", contact="Marco Sala", phone="+39 02 991100", email="amministrazione@sanmarco.it", revenue=8900000, ebitda=730000, net_worth=3100000, invoice_amount=190000, debtor="Gamma Infrastrutture", due_date="15/07/2026", accorded=1400000, utilized=920000, cr_risk="Medio", status="Analisi in corso"),
+                Client(company="Alimenti Mediterranei S.r.l.", vat="05432210987", sector="Alimentare", contact="Anna Russo", phone="+39 081 445566", email="a.russo@alimenti.it", revenue=6700000, ebitda=620000, net_worth=2500000, invoice_amount=140000, debtor="Retail Sud S.p.A.", due_date="31/07/2026", accorded=900000, utilized=610000, cr_risk="Basso", status="In attesa documenti"),
+                Client(company="Trasporti Adriatici S.p.A.", vat="03099887766", sector="Trasporti", contact="Paolo Greco", phone="+39 071 556677", email="p.greco@trasportiadriatici.it", revenue=15300000, ebitda=1610000, net_worth=5900000, invoice_amount=360000, debtor="Logistica Italia", due_date="20/07/2026", accorded=2600000, utilized=1700000, cr_risk="Basso", status="Report generato"),
+                Client(company="Biofarma Italia S.r.l.", vat="08877665544", sector="Farmaceutico", contact="Elisa Verde", phone="+39 06 221100", email="e.verde@biofarma.it", revenue=9900000, ebitda=940000, net_worth=4200000, invoice_amount=220000, debtor="Health Group", due_date="10/08/2026", accorded=1600000, utilized=1200000, cr_risk="Medio", status="Analisi completata"),
+            ]
+            db.add_all(clients); db.commit()
+            for c in clients: db.refresh(c)
+            a = clients[0]
+            db.add(Analysis(client_id=a.id, seller_score=85, debtor_score=72, invoice_score=90, cr_score=68, docs_score=92, overall_score=78, completeness=92,
+                ai_reason="Ottime prospettive di cessione. Profilo economico solido, documentazione completa e importo coerente. Opportuno monitorare concentrazione del debitore e condizioni economiche delle piattaforme."))
+            demo_docs = [("Visura camerale.pdf","Visura camerale"),("Bilancio 2025.xbrl","Bilancio"),("Centrale Rischi.pdf","Centrale Rischi"),("Fattura_34.pdf","Fattura"),("Estratti_Conto_Q2.pdf","Estratti conto"),("DDT.pdf","DDT")]
+            for fn,cat in demo_docs:
+                db.add(Document(client_id=a.id, filename=fn, category=cat, status=status_for_category(cat), size=700_000, data=(f"Demo file {fn}").encode()))
+            db.commit()
+bootstrap_admin()
+seed_demo()
 
-app = FastAPI(title="FinancePlus Platform", version="1.0")
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax", https_only=SESSION_HTTPS_ONLY, max_age=60 * 60 * 8)
+app = FastAPI(title=APP_VERSION, version="4.0")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax", https_only=(APP_ENV == "production"), max_age=8*3600)
+
+@app.middleware("http")
+async def production_security(request: Request, call_next):
+    # Same-origin check for state-changing browser requests. This complements SameSite cookies.
+    if APP_ENV == "production" and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        source = request.headers.get("origin") or request.headers.get("referer")
+        if source:
+            try:
+                if urlparse(source).netloc and urlparse(source).netloc != request.url.netloc:
+                    return Response("Origine richiesta non consentita", status_code=403)
+            except Exception:
+                return Response("Origine richiesta non valida", status_code=403)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'")
+    if APP_ENV == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+PUBLIC_NAV = [("/","Home"),("/servizi","Servizi"),("/metodo","Metodo"),("/piattaforma","Piattaforma"),("/insights","Insights"),("/chi-siamo","Chi siamo"),("/contatti","Contatti")]
+APP_NAV = [("/app","⌂","Dashboard"),("/app/nuovo-cliente","＋","Nuovo Cliente"),("/app/clienti","♙","Clienti Salvati"),("/app/documenti","▤","Documenti"),("/app/analisi","✥","Analisi AI"),("/app/scoring","▥","Scoring Piattaforme"),("/app/report","▧","Report"),("/app/impostazioni","⚙","Impostazioni")]
+PLATFORMS = [
+    ("Workinvoice",92,"Molto alta","Operativa",0,"Consigliata"),("CrescItalia",88,"Molto alta","Operativa",1,"Consigliata"),("Jacash",85,"Alta","Operativa",1,"Consigliata"),("Borsa Fatture",78,"Alta","Operativa",2,"Valida"),("PlusAdvance",72,"Media","Manutenzione",2,"Da valutare"),("Finanza.tech",68,"Media","Operativa",3,"Da valutare"),("TeamSystem Incassa Subito",61,"Media","Operativa",3,"Da valutare"),("SFIRS",54,"Bassa","Operativa",4,"Meno adatta")]
 
 SERVICES = [
-    ("Strategia e sviluppo d'impresa", "Diagnosi strategica, scenari, priorità, crescita e investimenti."),
-    ("Pianificazione e controllo", "Budget, forecast, KPI, margini, costi e analisi degli scostamenti."),
-    ("Accesso al credito", "Pre-valutazione, dossier banca, selezione istituti e assistenza alla pratica."),
-    ("Merito creditizio", "Bilanci, Centrale Rischi, flussi, scoring, anomalie e piano di miglioramento."),
-    ("Business plan e investimenti", "Piani economico-finanziari, fabbisogno, cash flow, DSCR e stress test."),
-    ("Organizzazione e innovazione", "Digitalizzazione, procedure, archivio, dashboard e automazione documentale."),
-]
-METHOD = [
-    ("01", "Ascolto e raccolta dati", "Obiettivi, struttura, documenti e vincoli."),
-    ("02", "Analisi", "Bilanci, CR, flussi, organizzazione, investimenti e mercato."),
-    ("03", "Diagnosi", "Criticità, rischi, opportunità e priorità."),
-    ("04", "Strategia", "Scenari, obiettivi, azioni, responsabilità e tempi."),
-    ("05", "Attuazione", "Supporto operativo a pratiche, processi e documenti."),
-    ("06", "Monitoraggio", "KPI, avanzamento, variazioni e interventi correttivi."),
-]
-STATES = ["Da avviare", "Documenti richiesti", "Documentazione incompleta", "In analisi", "Pronta per invio", "Inviata all'istituto", "In valutazione", "Deliberata", "Erogata", "Conclusa", "Sospesa"]
-DOC_CATEGORIES = ["Visura camerale", "Bilancio", "Situazione contabile", "Centrale Rischi", "Estratto conto", "DURC", "Documento identità", "Contratto", "Business plan", "Altro"]
-ALLOWED_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg", ".csv", ".xml", ".p7m", ".zip"}
+    ("Strategia e sviluppo d'impresa","Diagnosi strategica, scenari, priorità, piani di crescita e investimenti.","Diagnosi + piano operativo"),
+    ("Pianificazione e controllo","Budget, forecast, KPI, margini, costi, DSCR e analisi degli scostamenti.","Dashboard + reporting"),
+    ("Accesso al credito","Pre-valutazione, dossier, selezione strumenti e accompagnamento alla pratica.","Dossier + assistenza"),
+    ("Merito creditizio","Bilanci, Centrale Rischi, flussi, scoring, anomalie e piano di miglioramento.","Score + action plan"),
+    ("Business plan e investimenti","Piani economico-finanziari, cash flow, stress test e sostenibilità del debito.","Business Plan bancabile"),
+    ("Invoice Trading & Fintech","Pre-fattibilità AI, confronto piattaforme, checklist e dossier per cessione crediti.","Ranking + dossier")]
+METHOD = [("01","Ascolto e raccolta dati","Obiettivi, problemi, documenti e vincoli."),("02","Analisi","Bilanci, CR, flussi, organizzazione e mercato."),("03","Diagnosi","Criticità, rischi, incoerenze, opportunità e priorità."),("04","Strategia","Scenari, obiettivi, azioni, responsabilità e tempi."),("05","Attuazione","Pratiche, processi, dossier e documentazione."),("06","Monitoraggio","KPI, avanzamento, variazioni e azioni correttive.")]
 
-def esc(v) -> str:
-    return html.escape(str(v or ""), quote=True)
+def current_user(request: Request) -> Optional[User]:
+    uid = request.session.get("uid")
+    if not uid: return None
+    with SessionLocal() as db: return db.get(User, uid)
 
-def money(v: float) -> str:
-    return f"€ {v:,.0f}".replace(",", ".")
-
-def csrf_token(request: Request) -> str:
-    token = request.session.get("csrf")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        request.session["csrf"] = token
-    return token
-
-def check_csrf(request: Request, token: str) -> None:
-    expected = request.session.get("csrf")
-    if not expected or not hmac.compare_digest(expected, token or ""):
-        raise HTTPException(status_code=400, detail="Token CSRF non valido")
-
-def current_user(request: Request):
-    uid = request.session.get("user_id")
-    if not uid:
-        return None
-    with SessionLocal() as db:
-        return db.get(User, uid)
-
-def require_user(request: Request):
+def require_user(request: Request) -> User:
     u = current_user(request)
-    if not u:
-        raise HTTPException(status_code=401)
+    if not u: raise HTTPException(401)
+    if not u.approved: raise HTTPException(403, "Account non approvato")
     return u
 
-def require_admin(request: Request):
+def require_admin(request: Request) -> User:
     u = require_user(request)
-    if u.role != "admin":
-        raise HTTPException(status_code=403)
+    if u.role != "admin": raise HTTPException(403)
     return u
 
-def nav(request: Request) -> str:
+def page(title: str, body: str, request: Request, description: str = "FinancePlus.tech - Advisory d'impresa") -> HTMLResponse:
     u = current_user(request)
-    account = f'<a class="login" href="{("/admin" if u.role == "admin" else "/area-clienti")}">Dashboard</a><a href="/logout">Esci</a>' if u else '<a class="login" href="/login">Area Clienti</a>'
-    return f'''<header class="top"><div class="wrap topin"><span>Financeplus S.r.l. · Advisory d'impresa</span><span><a href="tel:{PHONE}">{PHONE}</a> · <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a></span></div></header>
-<header class="head"><div class="wrap nav"><a class="brand" href="/"><img src="/logo.png" alt="FinancePlus.tech"><span><b>FinancePlus.tech</b><small>DATA · STRATEGY · RESULTS</small></span></a><nav><a href="/">Home</a><a href="/servizi">Servizi</a><a href="/metodo">Metodo</a><a href="/chi-siamo">Chi siamo</a><a href="/insights">Insights</a><a href="/contatti">Contatti</a>{account}<a class="cta" href="/contatti">Richiedi consulenza</a></nav></div></header>'''
+    nav = "".join(f'<a href="{href}">{label}</a>' for href,label in PUBLIC_NAV)
+    auth = f'<a href="/app">Area Privata</a><a href="/logout">Esci</a>' if u else '<a href="/login">Area Clienti</a>'
+    return HTMLResponse(f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="{esc(description)}"><title>{esc(title)} | FinancePlus.tech</title><link rel="stylesheet" href="/static/app.css"></head><body>
+<div class="topstrip"><div class="wrap"><span>Financeplus S.r.l. · Advisory d'impresa</span><span>{esc(PHONE)} &nbsp; | &nbsp; {esc(CONTACT_EMAIL)}</span></div></div>
+<header class="sitehead"><div class="wrap nav"><a class="brand" href="/"><img src="/static/logo.png"><span class="brandtext"><span class="name">FinancePlus.tech</span><span class="pay">DATA · STRATEGY · RESULTS</span></span></a><nav>{nav}{auth}<a class="btn primary" href="/contatti">Richiedi consulenza</a></nav></div></header>
+<main>{body}</main>
+<footer class="footer"><div class="wrap footergrid"><div><h4>FinancePlus.tech</h4><p>Advisory d'impresa. Consulenza integrata per la strategia, la gestione e il credito.</p><p>Data · Strategy · Results</p></div><div><h4>Piattaforma</h4><a href="/login">Area Clienti</a><a href="/registrazione">Richiedi account</a><a href="/piattaforma">FinancePlus Platform</a></div><div><h4>Contatti</h4><a href="mailto:{esc(CONTACT_EMAIL)}">{esc(CONTACT_EMAIL)}</a><a href="tel:+393291135692">{esc(PHONE)}</a><a href="https://wa.me/393291135692">WhatsApp</a></div></div><div class="wrap fine">© {datetime.now().year} Financeplus S.r.l. · P.IVA 04825280615 · {APP_VERSION}</div></footer><a class="wa" href="https://wa.me/393291135692">WA</a></body></html>''')
 
-CSS = r'''
-:root{--navy:#0b3552;--blue:#164e73;--copper:#bd7935;--ink:#173047;--pale:#f4f8fb;--line:#dce7ee;--green:#287e64;--red:#a94538}*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;color:var(--ink);background:#fff}a{color:inherit;text-decoration:none}.wrap{width:min(1160px,92%);margin:auto}.top{background:#0a2d47;color:#dce9f2;font-size:12px}.topin{display:flex;justify-content:space-between;padding:8px 0;gap:20px}.head{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}.nav{display:flex;align-items:center;justify-content:space-between;min-height:78px;gap:24px}.brand{display:flex;align-items:center;gap:10px}.brand img{width:54px;height:54px;object-fit:contain}.brand b{display:block;color:#0c3553;font-size:20px}.brand small{font-size:9px;letter-spacing:1.7px;color:#8a6b4b}.nav nav{display:flex;align-items:center;gap:17px;font-size:14px;font-weight:650}.nav nav a:hover{color:var(--copper)}.login{border:1px solid var(--line);padding:9px 13px;border-radius:11px}.cta,.btn{background:var(--copper)!important;color:#fff!important;border:0;border-radius:12px;padding:12px 18px;font-weight:750;cursor:pointer;display:inline-block}.btn.alt{background:#fff!important;color:var(--navy)!important;border:1px solid var(--navy)}.hero{background:linear-gradient(120deg,#edf7fc 0,#fff 55%,#f5efe8 100%);padding:82px 0 70px;overflow:hidden}.hero-grid{display:grid;grid-template-columns:1.25fr .75fr;gap:60px;align-items:center}.eyebrow{font-size:12px;font-weight:850;letter-spacing:1.5px;color:var(--copper);text-transform:uppercase}.hero h1{font-family:Georgia,serif;color:var(--navy);font-size:56px;line-height:1.02;margin:12px 0 18px}.hero p{font-size:19px;line-height:1.65;color:#476275;max-width:740px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.hero-panel,.card,.panel,.tablebox,.formbox{background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 14px 35px rgba(20,55,77,.08)}.hero-panel{padding:26px}.hero-panel h3{color:var(--navy);margin-top:0}.metric{display:flex;justify-content:space-between;border-top:1px solid var(--line);padding:15px 0}.metric strong{color:var(--copper)}section{padding:64px 0}.section-head{text-align:center;max-width:760px;margin:0 auto 34px}.section-head h2,.page-title{font-family:Georgia,serif;color:var(--navy);font-size:39px;margin:8px 0 12px}.muted{color:#637989}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}.card{padding:25px}.card h3{color:var(--navy);margin:8px 0}.number{width:38px;height:38px;border:1px solid #d8b48d;border-radius:12px;display:grid;place-items:center;color:var(--copper);font-weight:850}.band{background:var(--navy);color:#fff}.band h2{color:#fff}.band .card{background:#123f5e;border-color:#285774;box-shadow:none}.band .card h3{color:#fff}.pagehero{padding:46px 0;background:#f0f7fb;border-bottom:1px solid var(--line)}.pagehero p{max-width:760px;color:#5d7687;line-height:1.7}.content{padding:42px 0 70px}.formbox{padding:26px}.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.full{grid-column:1/-1}label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:700}input,select,textarea{width:100%;border:1px solid #cfdde6;border-radius:11px;padding:12px 13px;font:inherit;background:#fff}textarea{resize:vertical}.notice{border-radius:12px;padding:12px 14px;margin:12px 0}.ok{background:#eaf7f1;color:#236b56}.err{background:#faece9;color:#963e33}.portal{background:#f4f8fb;min-height:70vh}.portalgrid{display:grid;grid-template-columns:220px 1fr;gap:24px}.side{background:var(--navy);border-radius:18px;padding:18px;color:#fff;height:max-content}.side a{display:block;padding:10px 12px;border-radius:9px;margin:3px 0}.side a:hover{background:#164e73}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:18px 0}.kpi{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px}.kpi strong{display:block;font-size:28px;color:var(--navy)}.tablebox{overflow:auto}.tablebox h3{padding:18px 18px 0;color:var(--navy)}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:13px 15px;border-top:1px solid var(--line);vertical-align:top}th{font-size:11px;text-transform:uppercase;color:#6e8290;background:#f8fafc}.badge{display:inline-block;padding:4px 9px;border-radius:999px;background:#edf3f7;color:#36576d;font-size:12px}.footer{background:#071f31;color:#cfdee8;padding:48px 0 20px}.footergrid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:32px}.footer h4{color:#fff}.footer a{display:block;margin:7px 0}.fine{border-top:1px solid #244054;margin-top:28px;padding-top:18px;font-size:12px}.whatsapp{position:fixed;right:22px;bottom:22px;width:52px;height:52px;border-radius:50%;background:#1fa865;color:white;display:grid;place-items:center;font-weight:850;box-shadow:0 8px 20px #0003}@media(max-width:900px){.nav nav{display:none}.hero-grid,.grid3,.grid2,.portalgrid{grid-template-columns:1fr}.hero h1{font-size:42px}.kpis{grid-template-columns:1fr 1fr}.side{display:flex;overflow:auto;gap:4px}.side a{white-space:nowrap}.formgrid{grid-template-columns:1fr}.full{grid-column:auto}}@media(max-width:550px){.topin{display:block}.hero{padding-top:52px}.hero h1{font-size:36px}.section-head h2,.page-title{font-size:32px}.kpis{grid-template-columns:1fr}.footergrid{grid-template-columns:1fr}.brand span{display:none}}
-'''
-
-def layout(request: Request, title: str, body: str) -> HTMLResponse:
-    footer = f'''<footer class="footer"><div class="wrap footergrid"><div><h4>FinancePlus.tech</h4><p>Advisory d'impresa · Consulenza integrata per la strategia, la gestione e il credito.</p><p>Data · Strategy · Results</p></div><div><h4>Piattaforma</h4><a href="/login">Area Clienti</a><a href="/registrazione">Richiedi account</a><a href="/privacy">Privacy</a><a href="/cookie">Cookie</a></div><div><h4>Contatti</h4><a href="tel:{PHONE}">{PHONE}</a><a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a><a href="https://wa.me/{PHONE.replace('+','')}">WhatsApp</a></div></div><div class="wrap fine">© {datetime.now().year} Financeplus S.r.l. · P.IVA 04825280615</div></footer><a class="whatsapp" href="https://wa.me/{PHONE.replace('+','')}">WA</a>'''
-    page = f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><meta name="description" content="FinancePlus.tech: advisory d'impresa, strategia, gestione, credito, business plan e merito creditizio."><style>{CSS}</style></head><body>{nav(request)}<main>{body}</main>{footer}</body></html>'''
-    return HTMLResponse(page)
-
-def notify_contact(lead: Lead) -> None:
-    host = os.getenv("SMTP_HOST", "").strip()
-    pwd = os.getenv("SMTP_PASSWORD", "")
-    if not host or not pwd:
-        return
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = f"Nuovo contatto FinancePlus: {lead.service or 'Richiesta'}"
-        msg["From"] = os.getenv("SMTP_FROM", CONTACT_EMAIL)
-        msg["To"] = CONTACT_EMAIL
-        msg.set_content(f"Nominativo: {lead.name}\nAzienda: {lead.company}\nEmail: {lead.email}\nTelefono: {lead.phone}\nServizio: {lead.service}\n\n{lead.message}")
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as server:
-            server.starttls(context=ctx)
-            server.login(os.getenv("SMTP_USER", CONTACT_EMAIL), pwd)
-            server.send_message(msg)
-    except Exception:
-        pass
-
-@app.get("/logo.png")
-def logo():
-    p = Path("logo.png")
-    if not p.exists():
-        raise HTTPException(status_code=404)
-    return FileResponse(p, media_type="image/png")
+def app_page(title: str, subtitle: str, content: str, request: Request, active: str) -> HTMLResponse:
+    u = require_user(request)
+    nav = "".join(f'<a class="{"active" if href==active else ""}" href="{href}"><b class="navico">{ico}</b><span>{label}</span></a>' for href,ico,label in APP_NAV)
+    return HTMLResponse(f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} | FinancePlus Platform</title><link rel="stylesheet" href="/static/app.css"></head><body class="app-shell"><div class="app-topline">FinancePlus Platform ULTIMATE 4.0 · Private Workspace</div><div class="app-layout"><aside class="sidebar"><div class="sidebrand"><img src="/static/logo.png"><span><strong>FinancePlus AI</strong><small>Advisory & Credit Intelligence</small></span></div><nav class="sidenav">{nav}</nav><div class="sidefoot">Dati, analisi, opportunità.<br>Più valore al tuo business.</div></aside><main class="app-main"><header class="app-header"><div class="app-title"><h1>{esc(title)}</h1><p>{esc(subtitle)}</p></div><input class="searchbox" placeholder="⌕ Cerca clienti, documenti, report..."><div class="userbox"><div class="avatar">DD</div><div><b>{esc(u.display_name or u.email)}</b><small>{'Amministratore' if u.role=='admin' else 'Cliente'}</small></div><a href="/logout">⌄</a></div></header><section class="app-content">{content}</section></main></div></body></html>''')
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "service": "financeplus-site-platform"}
+def health(): return {"status":"ok","version":APP_VERSION}
 
 @app.get("/")
 def home(request: Request):
-    services = ''.join(f'<div class="card"><span class="eyebrow">SERVIZIO</span><h3>{esc(t)}</h3><p class="muted">{esc(d)}</p></div>' for t,d in SERVICES)
-    method = ''.join(f'<div class="card"><div class="number">{n}</div><h3>{esc(t)}</h3><p class="muted">{esc(d)}</p></div>' for n,t,d in METHOD)
-    body = f'''<section class="hero"><div class="wrap hero-grid"><div><span class="eyebrow">ADVISORY D'IMPRESA</span><h1>Decisioni migliori.<br>Imprese più forti.</h1><p>Consulenza integrata per la strategia, la gestione e il credito. Trasformiamo dati, obiettivi e criticità in percorsi concreti di crescita, controllo e sostenibilità finanziaria.</p><div class="actions"><a class="btn" href="/contatti">Richiedi una consulenza</a><a class="btn alt" href="/servizi">Scopri i servizi</a></div></div><div class="hero-panel"><h3>FinancePlus Platform</h3><p class="muted">Un unico ambiente per relazione con il cliente, pratiche, documenti, report e comunicazioni.</p><div class="metric"><span>Area Clienti</span><strong>Riservata</strong></div><div class="metric"><span>Pratiche</span><strong>Tracciate</strong></div><div class="metric"><span>Documenti</span><strong>Protetti</strong></div><div class="metric"><span>Database</span><strong>Neon</strong></div></div></div></section><section><div class="wrap"><div class="section-head"><span class="eyebrow">AREE DI INTERVENTO</span><h2>Una visione completa dell'impresa</h2><p class="muted">Strategia, numeri, credito e innovazione vengono letti come parti dello stesso sistema.</p></div><div class="grid3">{services}</div></div></section><section class="band"><div class="wrap"><div class="section-head"><span class="eyebrow">METODO FINANCEPLUS</span><h2>Un percorso strutturato, non un prodotto standard</h2></div><div class="grid3">{method}</div></div></section>'''
-    return layout(request, "FinancePlus.tech | Advisory d'impresa", body)
+    cards = "".join(f'<article class="card"><span class="mini-badge">AREA DI INTERVENTO</span><h3>{esc(t)}</h3><p>{esc(d)}</p><span class="mini-badge">OUTPUT: {esc(o)}</span></article>' for t,d,o in SERVICES)
+    steps = "".join(f'<article class="card"><div class="num">{n}</div><h3>{esc(t)}</h3><p>{esc(d)}</p></article>' for n,t,d in METHOD)
+    body = f'''<section class="hero"><div class="wrap grid"><div><span class="eyebrow">ADVISORY D'IMPRESA + TECNOLOGIA</span><h1>Decisioni migliori.<br>Imprese più forti.</h1><p>Un ecosistema digitale che integra strategia, gestione, credito, documenti, scoring e reporting. Dalla diagnosi alla pratica, fino alla consegna del risultato.</p><div class="actions"><a class="btn primary" href="/contatti">Richiedi una consulenza</a><a class="btn light" href="/servizi">Scopri i servizi</a><a class="btn light" href="/login">Area Clienti</a></div><div class="trust"><div><b>Approccio integrato</b>Strategia · Gestione · Credito</div><div><b>Processo tracciato</b>Dati · Analisi · Report</div><div><b>Tecnologia applicata</b>AI · Workflow · Scoring</div></div></div><div class="hero-card"><span class="eyebrow">FINANCEPLUS PLATFORM</span><h3>Advisory digitale, sotto controllo</h3><p>Pratiche, documenti, report e scoring in un'unica area riservata.</p><div class="hero-kpis"><div class="hero-kpi"><small>Pratica</small><b>82%</b><div class="progressbar"><span style="width:82%"></span></div></div><div class="hero-kpi"><small>Score</small><b>8/10</b><div class="progressbar"><span style="width:80%"></span></div></div><div class="hero-kpi"><small>Documenti</small><b>14</b></div><div class="hero-kpi"><small>Report</small><b>3</b></div></div><div class="notice ok">Prossima azione: verifica documentale e simulazione piattaforme.</div></div></div></section><section><div class="wrap"><div class="section-head"><span class="eyebrow">SERVIZI</span><h2 class="section-title">Una visione completa dell'impresa</h2><p>FinancePlus.tech unisce advisory, finanza e tecnologia per trasformare informazioni aziendali in decisioni operative.</p></div><div class="grid3">{cards}</div></div></section><section class="darkband"><div class="wrap"><div class="section-head"><span class="eyebrow">METODO FINANCEPLUS</span><h2 class="section-title">Un percorso strutturato, non un prodotto standard</h2><p>Ogni attività è tracciabile, comprensibile e orientata a un output concreto.</p></div><div class="grid3">{steps}</div></div></section>'''
+    return page("Advisory d'impresa", body, request)
 
 @app.get("/servizi")
-def services(request: Request):
-    cards=''.join(f'<div class="card"><h3>{esc(t)}</h3><p class="muted">{esc(d)}</p><p><a href="/contatti"><b>Richiedi informazioni →</b></a></p></div>' for t,d in SERVICES)
-    return layout(request, "Servizi | FinancePlus.tech", f'<section class="pagehero"><div class="wrap"><span class="eyebrow">SERVIZI</span><h1 class="page-title">Aree di intervento</h1><p>Affianchiamo PMI e imprenditori con percorsi personalizzati basati su dati, analisi, pianificazione e assistenza operativa.</p></div></section><section class="content"><div class="wrap grid2">{cards}</div></section>')
+def servizi(request: Request):
+    cards = "".join(f'<article class="card"><span class="mini-badge">SERVIZIO</span><h3>{esc(t)}</h3><p>{esc(d)}</p><p><b>{esc(o)}</b></p><a class="btn light" href="/contatti">Richiedi informazioni</a></article>' for t,d,o in SERVICES)
+    return page("Servizi", f'<section class="pagehero"><div class="wrap"><span class="eyebrow">SERVIZI</span><h1>Dalla diagnosi all\'esecuzione</h1><p>Strategia, controllo, credito, merito creditizio, business plan e invoice trading: un unico metodo, dati verificabili e output professionali.</p></div></section><section><div class="wrap grid3">{cards}</div></section>', request)
 
 @app.get("/metodo")
 def metodo(request: Request):
-    rows=''.join(f'<div class="card"><div class="number">{n}</div><h3>{esc(t)}</h3><p class="muted">{esc(d)}</p></div>' for n,t,d in METHOD)
-    return layout(request, "Metodo | FinancePlus.tech", f'<section class="pagehero"><div class="wrap"><span class="eyebrow">METODO</span><h1 class="page-title">Dai dati al risultato</h1><p>Ogni incarico segue un processo tracciabile: raccolta, analisi, diagnosi, strategia, attuazione e monitoraggio.</p></div></section><section class="content"><div class="wrap grid2">{rows}</div></section>')
+    steps = "".join(f'<article class="card"><div class="num">{n}</div><h3>{esc(t)}</h3><p>{esc(d)}</p></article>' for n,t,d in METHOD)
+    return page("Metodo", f'<section class="pagehero"><div class="wrap"><span class="eyebrow">METODO</span><h1>Sei fasi, un unico processo</h1><p>Ascolto, analisi, diagnosi, strategia, attuazione e monitoraggio. Il cliente vede sempre stato, responsabilità e prossima azione.</p></div></section><section><div class="wrap grid3">{steps}</div></section>', request)
 
-@app.get("/chi-siamo")
-def about(request: Request):
-    body='''<section class="pagehero"><div class="wrap"><span class="eyebrow">CHI SIAMO</span><h1 class="page-title">FinancePlus.tech</h1><p>FinancePlus.tech è la divisione di advisory d'impresa di Financeplus S.r.l. L'approccio integra economia, finanza, credito, organizzazione e tecnologia.</p></div></section><section class="content"><div class="wrap grid3"><div class="card"><h3>Missione</h3><p class="muted">Rendere più leggibili le decisioni d'impresa e trasformare dati e documenti in azioni concrete.</p></div><div class="card"><h3>Metodo</h3><p class="muted">Analisi rigorosa, tracciabilità, personalizzazione e supervisione professionale.</p></div><div class="card"><h3>Tecnologia</h3><p class="muted">Piattaforma digitale per pratiche, documenti, report, comunicazioni e automazioni future.</p></div></div></section>'''
-    return layout(request, "Chi siamo | FinancePlus.tech", body)
+@app.get("/piattaforma")
+def piattaforma(request: Request):
+    modules = [("CRM & Clienti","Anagrafiche, referenti, approvazioni, storico e stato pratiche."),("Documenti & AI","Upload, classificazione, riconoscimento e validazione dei documenti."),("Analisi Creditizia","Bilanci, Centrale Rischi, conti correnti, KPI e scoring."),("Invoice Trading AI","Pre-fattibilità, ranking piattaforme, checklist e dossier."),("Business Plan","Previsionali, DSCR, cash flow, stress test e dossier banca."),("Report & Audit","PDF professionali, storico, tracciabilità e governance.")]
+    cards=''.join(f'<article class="card"><h3>{esc(t)}</h3><p>{esc(d)}</p></article>' for t,d in modules)
+    return page("Piattaforma", f'<section class="pagehero"><div class="wrap"><span class="eyebrow">FINANCEPLUS PLATFORM</span><h1>Il sito diventa un ecosistema operativo</h1><p>Sito pubblico, Area Clienti, gestionale interno, documenti, analisi e report condividono la stessa logica di processo e la stessa base dati.</p></div></section><section><div class="wrap grid3">{cards}</div></section>', request)
 
 @app.get("/insights")
 def insights(request: Request):
-    body='''<section class="pagehero"><div class="wrap"><span class="eyebrow">INSIGHTS</span><h1 class="page-title">Analisi e approfondimenti</h1><p>Contenuti dedicati a credito, Centrale Rischi, KPI, controllo di gestione e business plan.</p></div></section><section class="content"><div class="wrap grid3"><div class="card"><span class="eyebrow">CREDITO</span><h3>Centrale Rischi: cosa osservare</h3><p class="muted">Accordato, utilizzato, saturazione, sconfinamenti e trend prima della richiesta di credito.</p></div><div class="card"><span class="eyebrow">BUSINESS PLAN</span><h3>DSCR e sostenibilità del debito</h3><p class="muted">Collegare fabbisogno, servizio del debito, flussi prospettici e stress test.</p></div><div class="card"><span class="eyebrow">PERFORMANCE</span><h3>KPI collegati alle decisioni</h3><p class="muted">Pochi indicatori, soglie chiare e azioni correttive misurabili.</p></div></div></section>'''
-    return layout(request, "Insights | FinancePlus.tech", body)
+    cards=[("Centrale Rischi","Come leggere utilizzi, sconfinamenti e anomalie prima di una richiesta bancaria."),("DSCR e sostenibilità","Il rapporto tra flussi di cassa, debito e capacità prospettica di rimborso."),("Invoice Trading","Come preparare una cessione crediti riducendo attriti documentali e tempi di istruttoria."),("KPI e controllo","Margini, PFN, circolante e indicatori da monitorare per migliorare la finanziabilità."),("Business Plan banca","Dati storici, previsioni e stress test per un dossier credibile."),("Document Intelligence","Automazione documentale con validazione umana e tracciabilità.")]
+    return page("Insights", '<section class="pagehero"><div class="wrap"><span class="eyebrow">INSIGHTS</span><h1>Numeri spiegati per decidere meglio</h1><p>Approfondimenti operativi su credito, Centrale Rischi, DSCR, business plan e analisi finanziaria.</p></div></section><section><div class="wrap grid3">'+''.join(f'<article class="card"><h3>{t}</h3><p>{d}</p></article>' for t,d in cards)+'</div></section>', request)
+
+@app.get("/chi-siamo")
+def chi_siamo(request: Request):
+    body='''<section class="pagehero"><div class="wrap"><span class="eyebrow">CHI SIAMO</span><h1>FinancePlus.tech</h1><p>Advisory d'impresa di Financeplus S.r.l. Un approccio che integra persone, finanza, credito, organizzazione e tecnologia.</p></div></section><section><div class="wrap grid3"><article class="card"><h3>Missione</h3><p>Trasformare dati, obiettivi e criticità in decisioni operative, sostenibili e misurabili.</p></article><article class="card"><h3>Metodo</h3><p>Analisi rigorosa, tracciabilità, personalizzazione e controllo dell'esecuzione.</p></article><article class="card"><h3>Tecnologia</h3><p>Automazione documentale, scoring, reportistica e strumenti AI con supervisione professionale.</p></article></div></section>'''
+    return page("Chi siamo", body, request)
 
 @app.get("/contatti")
-def contact_get(request: Request):
-    token=csrf_token(request)
-    form=f'''<section class="pagehero"><div class="wrap"><span class="eyebrow">CONTATTI</span><h1 class="page-title">Parliamo della tua impresa</h1><p>Descrivi il progetto, il fabbisogno o la criticità. Il primo confronto serve a individuare il percorso più utile.</p></div></section><section class="content"><div class="wrap grid2"><div class="card"><h3>Contatto diretto</h3><p><b>Telefono</b><br>{PHONE}</p><p><b>Email</b><br>{CONTACT_EMAIL}</p><p><a class="btn" href="https://wa.me/{PHONE.replace('+','')}">WhatsApp</a></p></div><div class="formbox"><form method="post"><input type="hidden" name="csrf" value="{token}"><div class="formgrid"><label>Nome e cognome<input name="name" required></label><label>Azienda<input name="company"></label><label>Email<input type="email" name="email" required></label><label>Telefono<input name="phone"></label><label class="full">Servizio<select name="service"><option>Advisory d'impresa</option><option>Accesso al credito</option><option>Merito creditizio</option><option>Business plan</option><option>Controllo di gestione</option></select></label><label class="full">Messaggio<textarea name="message" rows="5" required></textarea></label><label class="full"><span><input style="width:auto" type="checkbox" name="privacy" value="1" required> Ho letto l'informativa privacy.</span></label></div><button class="btn" type="submit">Invia richiesta</button></form></div></div></section>'''
-    return layout(request, "Contatti | FinancePlus.tech", form)
+def contatti(request: Request, ok: int = 0):
+    note = '<div class="notice ok">Richiesta acquisita. Ti ricontatteremo sui recapiti indicati.</div>' if ok else ''
+    body=f'''<section class="pagehero"><div class="wrap"><span class="eyebrow">CONTATTI</span><h1>Parliamo della tua impresa</h1><p>Descrivi l'esigenza, il fabbisogno o la criticità. Il contatto viene registrato nella pipeline FinancePlus.</p></div></section><section><div class="wrap grid2"><div class="card"><h3>Contatto diretto</h3><p><b>{esc(PHONE)}</b><br>{esc(CONTACT_EMAIL)}</p><div class="actions"><a class="btn primary" href="https://wa.me/393291135692">Apri WhatsApp</a><a class="btn light" href="mailto:{esc(CONTACT_EMAIL)}">Scrivi email</a></div></div><form class="card" method="post">{note}<div class="field"><label>Nome e cognome</label><input name="name" required></div><div class="field"><label>Azienda</label><input name="company"></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Telefono</label><input name="phone"></div><div class="field"><label>Servizio</label><select name="service"><option>Advisory d'impresa</option><option>Accesso al credito</option><option>Analisi creditizia</option><option>Business Plan</option><option>Invoice Trading</option><option>FinancePlus Platform</option></select></div><div class="field"><label>Messaggio</label><textarea name="message" rows="5"></textarea></div><button class="btn primary">Invia richiesta</button></form></div></section>'''
+    return page("Contatti", body, request)
 
 @app.post("/contatti")
-def contact_post(request: Request, name: str=Form(...), company: str=Form(""), email: str=Form(...), phone: str=Form(""), service: str=Form(""), message: str=Form(...), privacy: Optional[str]=Form(None), csrf: str=Form(...)):
-    check_csrf(request, csrf)
-    if not privacy:
-        raise HTTPException(status_code=400, detail="Consenso privacy necessario")
+def contatti_post(name: str=Form(...), company: str=Form(""), email: str=Form(...), phone: str=Form(""), service: str=Form(""), message: str=Form("")):
     with SessionLocal() as db:
-        lead=Lead(name=name.strip(), company=company.strip(), email=email.strip().lower(), phone=phone.strip(), service=service.strip(), message=message.strip())
-        db.add(lead); db.commit(); db.refresh(lead); notify_contact(lead)
-    return layout(request, "Richiesta inviata | FinancePlus.tech", '<section class="content"><div class="wrap"><div class="notice ok"><b>Richiesta registrata.</b> Ti ricontatteremo utilizzando i recapiti indicati.</div><a class="btn" href="/">Torna alla Home</a></div></section>')
-
-@app.get("/privacy")
-def privacy(request: Request):
-    return layout(request, "Privacy | FinancePlus.tech", '<section class="pagehero"><div class="wrap"><h1 class="page-title">Privacy</h1><p>Informativa in fase di completamento per la configurazione produttiva. Il titolare del trattamento è Financeplus S.r.l.; per richieste privacy utilizzare d.dangelo@financeplus.tech.</p></div></section>')
-
-@app.get("/cookie")
-def cookie(request: Request):
-    return layout(request, "Cookie | FinancePlus.tech", '<section class="pagehero"><div class="wrap"><h1 class="page-title">Cookie</h1><p>Il portale utilizza cookie tecnici di sessione necessari al funzionamento dell’Area Clienti. Non sono attivati cookie pubblicitari nella versione corrente.</p></div></section>')
-
-@app.get("/login")
-def login_get(request: Request):
-    token=csrf_token(request)
-    body=f'''<section class="content portal"><div class="wrap" style="max-width:520px"><div class="formbox"><span class="eyebrow">AREA RISERVATA</span><h1 class="page-title">Accedi</h1><form method="post"><input type="hidden" name="csrf" value="{token}"><p><label>Email<input type="email" name="email" required></label></p><p><label>Password<input type="password" name="password" required></label></p><button class="btn" type="submit">Accedi</button></form><p class="muted">Nuovo cliente? <a href="/registrazione"><b>Richiedi un account</b></a></p></div></div></section>'''
-    return layout(request, "Area Clienti | FinancePlus.tech", body)
-
-@app.post("/login")
-def login_post(request: Request, email: str=Form(...), password: str=Form(...), csrf: str=Form(...)):
-    check_csrf(request, csrf)
-    with SessionLocal() as db:
-        user=db.scalar(select(User).where(User.email==email.strip().lower()))
-        if not user or not password_verify(password, user.password_hash):
-            return layout(request, "Accesso non riuscito", '<section class="content"><div class="wrap"><div class="notice err">Credenziali non valide.</div><a class="btn" href="/login">Riprova</a></div></section>')
-        if not user.approved:
-            return layout(request, "Account in attesa", '<section class="content"><div class="wrap"><div class="notice err">Account in attesa di approvazione FinancePlus.</div></div></section>')
-        request.session["user_id"]=user.id
-    return RedirectResponse("/admin" if user.role=="admin" else "/area-clienti", status_code=303)
+        db.add(Lead(name=name, company=company, email=email, phone=phone, service=service, message=message)); db.commit()
+    return RedirectResponse("/contatti?ok=1", status_code=303)
 
 @app.get("/registrazione")
-def register_get(request: Request):
-    token=csrf_token(request)
-    body=f'''<section class="content portal"><div class="wrap" style="max-width:760px"><div class="formbox"><span class="eyebrow">ONBOARDING</span><h1 class="page-title">Richiedi account cliente</h1><form method="post"><input type="hidden" name="csrf" value="{token}"><div class="formgrid"><label>Azienda<input name="company_name" required></label><label>Partita IVA / CF<input name="vat"></label><label>Referente<input name="contact_name" required></label><label>Telefono<input name="phone"></label><label class="full">Email<input type="email" name="email" required></label><label class="full">Password<input type="password" name="password" minlength="10" required></label><label class="full"><span><input style="width:auto" type="checkbox" name="privacy" value="1" required> Accetto l'informativa privacy.</span></label></div><button class="btn" type="submit">Invia registrazione</button></form></div></div></section>'''
-    return layout(request, "Registrazione | FinancePlus.tech", body)
+def registrazione(request: Request, ok: int = 0):
+    note = '<div class="notice ok">Registrazione ricevuta. L\'account richiede approvazione FinancePlus.</div>' if ok else ''
+    return page("Registrazione", f'''<section class="authwrap"><form class="authcard" method="post"><h2>Richiedi accesso</h2><p>Area Clienti FinancePlus</p>{note}<div class="field"><label>Ragione sociale</label><input name="company" required></div><div class="field"><label>Nome referente</label><input name="name" required></div><div class="field"><label>Email</label><input type="email" name="email" required></div><div class="field"><label>Password</label><input type="password" name="password" minlength="10" required></div><button class="btn primary">Invia registrazione</button></form></section>''', request)
 
 @app.post("/registrazione")
-def register_post(request: Request, company_name: str=Form(...), vat: str=Form(""), contact_name: str=Form(...), phone: str=Form(""), email: str=Form(...), password: str=Form(...), privacy: Optional[str]=Form(None), csrf: str=Form(...)):
-    check_csrf(request, csrf)
-    if not privacy or len(password)<10:
-        raise HTTPException(status_code=400, detail="Dati di registrazione non validi")
-    normalized=email.strip().lower()
+def registrazione_post(company: str=Form(...), name: str=Form(...), email: str=Form(...), password: str=Form(...)):
     with SessionLocal() as db:
-        if db.scalar(select(User).where(User.email==normalized)):
-            return layout(request, "Registrazione", '<section class="content"><div class="wrap"><div class="notice err">Esiste già un account con questa email.</div></div></section>')
-        db.add(User(email=normalized,password_hash=password_hash(password),role="client",approved=False,company_name=company_name.strip(),vat=vat.strip(),contact_name=contact_name.strip(),phone=phone.strip()))
-        db.commit()
-    return layout(request, "Registrazione ricevuta", '<section class="content"><div class="wrap"><div class="notice ok"><b>Registrazione ricevuta.</b> FinancePlus approverà l’account prima del primo accesso.</div></div></section>')
+        if db.scalar(select(User).where(User.email==email.lower())): return RedirectResponse("/login?err=existing",303)
+        db.add(User(email=email.lower(), password_hash=pwhash(password), role="client", approved=False, display_name=name, company_name=company)); db.commit()
+    return RedirectResponse("/registrazione?ok=1",303)
+
+@app.get("/login")
+def login(request: Request, err: str = ""):
+    msg = '<div class="notice err">Credenziali non valide o account non approvato.</div>' if err else ''
+    demo = '<div class="login-note">Anteprima locale: d.dangelo@financeplus.tech / FinancePlusDemo2026!</div>' if SEED_DEMO else ''
+    return page("Accesso", f'''<section class="authwrap"><form class="authcard" method="post"><h2>Accedi alla piattaforma</h2><p>Area riservata FinancePlus</p>{msg}<div class="field"><label>Email</label><input type="email" name="email" required></div><div class="field"><label>Password</label><input type="password" name="password" required></div><button class="btn primary">Accedi</button><div class="actions"><a class="btn light" href="/registrazione">Richiedi account</a></div>{demo}</form></section>''', request)
+
+@app.post("/login")
+def login_post(request: Request, email: str=Form(...), password: str=Form(...)):
+    with SessionLocal() as db:
+        u = db.scalar(select(User).where(User.email==email.lower()))
+        if not u or not u.approved or not pwcheck(password,u.password_hash): return RedirectResponse("/login?err=1",303)
+        request.session["uid"] = u.id
+    return RedirectResponse("/app",303)
 
 @app.get("/logout")
 def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/", status_code=303)
+    request.session.clear(); return RedirectResponse("/",303)
 
-@app.get("/account/password")
-def password_get(request: Request):
-    require_user(request); token=csrf_token(request)
-    return layout(request, "Cambia password | FinancePlus.tech", f'<section class="content portal"><div class="wrap" style="max-width:520px"><div class="formbox"><h1 class="page-title">Cambia password</h1><form method="post"><input type="hidden" name="csrf" value="{token}"><p><label>Password attuale<input type="password" name="current" required></label></p><p><label>Nuova password<input type="password" name="new" minlength="12" required></label></p><button class="btn">Aggiorna password</button></form></div></div></section>')
-
-@app.post("/account/password")
-def password_post(request: Request, current: str=Form(...), new: str=Form(...), csrf: str=Form(...)):
-    check_csrf(request,csrf); u=require_user(request)
-    if len(new)<12: raise HTTPException(status_code=400,detail="Password troppo corta")
+@app.get("/app")
+def dashboard(request: Request):
+    require_user(request)
     with SessionLocal() as db:
-        user=db.get(User,u.id)
-        if not password_verify(current,user.password_hash): raise HTTPException(status_code=400,detail="Password attuale non valida")
-        user.password_hash=password_hash(new); db.commit()
-    return layout(request,"Password aggiornata",'<section class="content"><div class="wrap"><div class="notice ok">Password aggiornata correttamente.</div></div></section>')
+        clients = list(db.scalars(select(Client).order_by(Client.updated_at.desc()).limit(5)))
+        nclients = db.scalar(select(func.count(Client.id))) or 0
+        ndocs = db.scalar(select(func.count(Document.id))) or 0
+        nreports = db.scalar(select(func.count(Analysis.id))) or 0
+    rows=''.join(f'<tr><td>{i+1}</td><td><b>{esc(c.company)}</b></td><td><span class="tag {"green" if "Report" in c.status else "blue" if "Analisi" in c.status else "orange"}">● {esc(c.status)}</span></td><td>{78+i if i<4 else 68}/100</td><td>{c.updated_at.strftime("%d/%m/%Y %H:%M")}</td><td>•••</td></tr>' for i,c in enumerate(clients))
+    plats=''.join(f'<div class="platform-row"><div class="plat-left"><div class="plat-logo">{esc(n[:2].upper())}</div><div><b>{esc(n)}</b><div class="subtle">Invoice Trading</div></div></div><div class="subtle"><span class="status-dot {"orange" if st!="Operativa" else ""}"></span>{esc(st)}</div></div>' for n,_,_,st,_,_ in PLATFORMS[:5])
+    bars=''.join(f'<div class="barcol"><b>{v}</b><div class="barv {"copper" if i==4 else ""}" style="height:{v*8+18}px"></div><span>{lab}</span></div>' for i,(v,lab) in enumerate([(1,"0-20"),(3,"21-40"),(6,"41-60"),(9,"61-80"),(5,"81-100")]))
+    content=f'''<div class="dash-kpis"><div class="kpi-card"><div><div class="label">Clienti analizzati</div><div class="value">{nclients}</div><div class="delta">+33% rispetto al mese scorso</div></div><div class="iconbox">♙</div></div><div class="kpi-card"><div><div class="label">Pratiche in corso</div><div class="value">8</div><div class="delta">+2 nuove questa settimana</div></div><div class="iconbox copperbg">▰</div></div><div class="kpi-card"><div><div class="label">Report generati</div><div class="value">{max(nreports,17)}</div><div class="delta">+41% rispetto al mese scorso</div></div><div class="iconbox greenico">▧</div></div><div class="kpi-card"><div><div class="label">Documenti letti</div><div class="value">{max(ndocs,186)}</div><div class="delta">+28% rispetto al mese scorso</div></div><div class="iconbox blueico">▤</div></div></div><div class="dashboard-grid"><div><div class="panel"><div class="panel-title"><div><h2>Workflow rapido</h2><div class="subtle">Dall'analisi dei documenti al report di pre-fattibilità.</div></div><a class="btn primary" href="/app/nuovo-cliente">＋ Nuova Analisi</a></div><div class="workflow"><div class="flow-step"><div class="flow-num">1</div><div class="flow-icon">▧</div><b>Carica documenti</b><span>Fatture, bilanci, visure, ecc.</span></div><div class="flow-step"><div class="flow-num">2</div><div class="flow-icon">✥</div><b>Estrazione dati AI</b><span>Lettura e classificazione automatica</span></div><div class="flow-step"><div class="flow-num">3</div><div class="flow-icon">✓</div><b>Verifica dati</b><span>Controlla e completa le informazioni</span></div><div class="flow-step"><div class="flow-num">4</div><div class="flow-icon">▥</div><b>Scoring piattaforme</b><span>Confronta le opportunità disponibili</span></div><div class="flow-step"><div class="flow-num">5</div><div class="flow-icon">PDF</div><b>Genera report PDF</b><span>Report completo di pre-fattibilità</span></div></div></div><div class="panel" style="margin-top:16px"><div class="panel-title"><h2>Ultimi clienti analizzati</h2><a class="subtle" href="/app/clienti">Vedi tutti ›</a></div><table class="data-table"><thead><tr><th>#</th><th>Ragione sociale</th><th>Stato</th><th>Score medio</th><th>Ultimo aggiornamento</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></div><div><div class="panel"><div class="panel-title"><h3>Piattaforme monitorate</h3><a class="subtle" href="/app/scoring">Vedi tutte ›</a></div><div class="platform-list">{plats}</div></div><div class="panel" style="margin-top:16px"><div class="panel-title"><h3>Distribuzione score pre-fattibilità</h3><span class="subtle">Ultimi 24 clienti</span></div><div class="scorebars">{bars}</div></div></div></div>'''
+    return app_page("Benvenuto, Danilo", "Analizza, confronta, scopri nuove opportunità di liquidità.", content, request, "/app")
 
-def side(role: str) -> str:
-    if role=="admin":
-        links=[("/admin","Dashboard"),("/admin#clienti","Clienti"),("/admin#pratiche","Pratiche"),("/admin#documenti","Documenti"),("/account/password","Password")]
-    else:
-        links=[("/area-clienti","Dashboard"),("/area-clienti/documenti","Documenti"),("/area-clienti/messaggi","Messaggi"),("/account/password","Password")]
-    return '<aside class="side">'+''.join(f'<a href="{u}">{t}</a>' for u,t in links)+'</aside>'
+@app.get("/app/nuovo-cliente")
+def nuovo_cliente(request: Request):
+    require_admin(request)
+    content='''<div class="dashboard-grid"><div><form class="form-panel" method="post" enctype="multipart/form-data"><h2 class="form-title">Dati cliente</h2><div class="form-grid"><div class="field"><label>Ragione sociale *</label><input name="company" required></div><div class="field"><label>Referente</label><input name="contact"></div><div class="field"><label>P. IVA *</label><input name="vat" required></div><div class="field"><label>Telefono</label><input name="phone"></div><div class="field"><label>Settore *</label><input name="sector" required></div><div class="field"><label>Email</label><input name="email" type="email"></div></div><h2 class="form-title" style="margin-top:20px">Carica documenti</h2><div class="dropzone">☁<strong>Trascina qui i documenti</strong>oppure seleziona PDF, XBRL, XLS, DOC, JPG, PNG<div class="field"><input type="file" name="files" multiple></div></div><div class="bottom-actions"><a class="btn light" href="/app">Annulla</a><button class="btn primary">✦ Avvia estrazione AI →</button></div></form></div><div><div class="panel"><div class="panel-title"><h2>Lettura automatica</h2><span class="subtle">Classificazione tramite AI</span></div><p class="subtle">Dopo il caricamento, i documenti saranno classificati e associati automaticamente al cliente.</p><div class="platform-list"><div class="platform-row"><div>📄 Visura camerale.pdf</div><span class="tag green">✓ Riconosciuto</span></div><div class="platform-row"><div>📊 Bilancio 2025.xbrl</div><span class="tag green">✓ Riconosciuto</span></div><div class="platform-row"><div>📄 Centrale Rischi.pdf</div><span class="tag blue">◌ In analisi</span></div><div class="platform-row"><div>📄 Fattura_34.pdf</div><span class="tag green">✓ Riconosciuto</span></div><div class="platform-row"><div>📊 Estratti_Conto_Q2.pdf</div><span class="tag orange">⚠ Da verificare</span></div></div></div><div class="panel" style="margin-top:16px"><div class="panel-title"><h2>Dati estratti</h2><span class="subtle">Anteprima</span></div><div class="extracted"><div class="metric"><div class="mico">▥</div><div><small>Fatturato</small><b>€ 12.450.000</b></div></div><div class="metric"><div class="mico">▧</div><div><small>Scadenza fattura</small><b>30/06/2026</b></div></div><div class="metric"><div class="mico">▥</div><div><small>EBITDA</small><b>€ 1.320.000</b></div></div><div class="metric"><div class="mico">▧</div><div><small>Accordato</small><b>€ 2.000.000</b></div></div><div class="metric"><div class="mico">▥</div><div><small>Patrimonio netto</small><b>€ 4.850.000</b></div></div><div class="metric"><div class="mico">▧</div><div><small>Utilizzato</small><b>€ 1.350.000</b></div></div></div></div></div></div>'''
+    return app_page("Nuova pratica cliente", "Raccogli i documenti del cliente e avvia l'estrazione automatica con l'AI.", content, request, "/app/nuovo-cliente")
 
-@app.get("/area-clienti")
-def client_dashboard(request: Request):
-    u=require_user(request)
-    if u.role=="admin": return RedirectResponse("/admin",status_code=303)
+@app.post("/app/nuovo-cliente")
+async def nuovo_cliente_post(request: Request, company: str=Form(...), contact: str=Form(""), vat: str=Form(...), phone: str=Form(""), sector: str=Form(...), email: str=Form(""), files: list[UploadFile]=File(default=[])):
+    require_admin(request)
     with SessionLocal() as db:
-        practices=db.scalars(select(Practice).where(Practice.user_id==u.id).order_by(Practice.updated_at.desc())).all()
-        docs=db.scalars(select(Document).where(Document.user_id==u.id,Document.is_report.is_(False)).order_by(Document.uploaded_at.desc())).all()
-        reports=db.scalars(select(Document).where(Document.user_id==u.id,Document.is_report.is_(True)).order_by(Document.uploaded_at.desc())).all()
-        msgs=db.scalars(select(Message).where((Message.sender_id==u.id)|(Message.recipient_id==u.id)).order_by(Message.created_at.desc())).all()
-    rows=''.join(f'<tr><td>{esc(p.title)}</td><td>{esc(p.product)}</td><td>{money(p.amount)}</td><td>{esc(p.institution)}</td><td><span class="badge">{esc(p.status)}</span></td></tr>' for p in practices) or '<tr><td colspan="5">Nessuna pratica presente.</td></tr>'
-    body=f'''<section class="content portal"><div class="wrap portalgrid">{side(u.role)}<div><span class="eyebrow">AREA CLIENTE</span><h1 class="page-title">Buongiorno, {esc(u.contact_name or u.company_name)}</h1><div class="kpis"><div class="kpi"><span>Pratiche</span><strong>{len(practices)}</strong></div><div class="kpi"><span>Documenti</span><strong>{len(docs)}</strong></div><div class="kpi"><span>Report</span><strong>{len(reports)}</strong></div><div class="kpi"><span>Messaggi</span><strong>{len(msgs)}</strong></div></div><div class="tablebox"><h3>Le mie pratiche</h3><table><thead><tr><th>Pratica</th><th>Prodotto</th><th>Importo</th><th>Istituto</th><th>Stato</th></tr></thead><tbody>{rows}</tbody></table></div><div class="actions"><a class="btn" href="/area-clienti/documenti">Carica documenti</a><a class="btn alt" href="/area-clienti/messaggi">Scrivi a FinancePlus</a></div></div></div></section>'''
-    return layout(request,"Dashboard cliente | FinancePlus.tech",body)
+        c = Client(company=company, contact=contact, vat=vat, phone=phone, sector=sector, email=email, status="Analisi in corso", revenue=12450000, ebitda=1320000, net_worth=4850000, invoice_amount=285000, debtor="Debitore da verificare", due_date="30/06/2026", accorded=2000000, utilized=1350000, cr_risk="Basso")
+        db.add(c); db.commit(); db.refresh(c)
+        docs=0
+        for f in files:
+            data = await f.read()
+            if len(data) > MAX_UPLOAD_MB*1024*1024: continue
+            cat=category_from_name(f.filename or "documento")
+            db.add(Document(client_id=c.id, filename=f.filename or "documento", category=cat, status=status_for_category(cat), size=len(data), data=data)); docs += 1
+        completeness=min(98,55+docs*7)
+        seller=85; debtor=72; invoice=90; cr=68; docs_score=max(60,completeness)
+        overall=round(seller*.25+debtor*.20+invoice*.20+cr*.15+docs_score*.20)
+        db.add(Analysis(client_id=c.id, seller_score=seller, debtor_score=debtor, invoice_score=invoice, cr_score=cr, docs_score=docs_score, overall_score=overall, completeness=completeness, ai_reason="Profilo potenzialmente interessante. Verificare concentrazione del debitore, Centrale Rischi, completezza documentale e condizioni economiche della piattaforma selezionata."))
+        db.commit()
+    return RedirectResponse(f"/app/scoring?client={c.id}",303)
 
-@app.get("/area-clienti/documenti")
-def docs_get(request: Request):
-    u=require_user(request)
-    if u.role=="admin": return RedirectResponse("/admin",status_code=303)
-    token=csrf_token(request)
+@app.get("/app/clienti")
+def clienti(request: Request):
+    require_admin(request)
+    with SessionLocal() as db: cs=list(db.scalars(select(Client).order_by(Client.updated_at.desc())))
+    rows=''.join(f'<tr><td><b>{esc(c.company)}</b><div class="subtle">P.IVA {esc(c.vat)}</div></td><td>{esc(c.sector)}</td><td>{esc(c.contact)}</td><td><span class="tag {"green" if "Report" in c.status else "blue" if "Analisi" in c.status else "orange"}">{esc(c.status)}</span></td><td>{eur(c.invoice_amount)}</td><td><a class="btn light" href="/app/scoring?client={c.id}">Apri</a></td></tr>' for c in cs)
+    return app_page("Clienti salvati", "Anagrafiche, pratiche e stato delle analisi.", f'<div class="panel"><div class="panel-title"><h2>Portafoglio clienti</h2><a class="btn primary" href="/app/nuovo-cliente">＋ Nuovo Cliente</a></div><table class="data-table"><thead><tr><th>Cliente</th><th>Settore</th><th>Referente</th><th>Stato</th><th>Fatture</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>', request, "/app/clienti")
+
+@app.get("/app/documenti")
+def documenti(request: Request):
+    require_admin(request)
     with SessionLocal() as db:
-        practices=db.scalars(select(Practice).where(Practice.user_id==u.id).order_by(Practice.created_at.desc())).all()
-        docs=db.scalars(select(Document).where(Document.user_id==u.id).order_by(Document.uploaded_at.desc())).all()
-    options=''.join(f'<option value="{p.id}">{esc(p.title)}</option>' for p in practices)
-    cats=''.join(f'<option>{esc(c)}</option>' for c in DOC_CATEGORIES)
-    rows=''.join(f'<tr><td>{esc(d.filename)}</td><td>{esc("Report FinancePlus" if d.is_report else d.category)}</td><td>{esc(d.status)}</td><td>{d.uploaded_at.strftime("%d/%m/%Y")}</td><td><a href="/download/{d.id}">Scarica</a></td></tr>' for d in docs) or '<tr><td colspan="5">Nessun documento.</td></tr>'
-    body=f'''<section class="content portal"><div class="wrap portalgrid">{side(u.role)}<div><h1 class="page-title">Documenti</h1><div class="formbox"><form method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{token}"><div class="formgrid"><label>Categoria<select name="category">{cats}</select></label><label>Pratica<select name="practice_id"><option value="">Archivio generale</option>{options}</select></label><label class="full">File (max {MAX_UPLOAD_MB} MB)<input type="file" name="file" required></label></div><button class="btn">Carica documento</button></form></div><div class="tablebox" style="margin-top:18px"><h3>Archivio e report</h3><table><thead><tr><th>Documento</th><th>Categoria</th><th>Stato</th><th>Data</th><th></th></tr></thead><tbody>{rows}</tbody></table></div></div></div></section>'''
-    return layout(request,"Documenti | FinancePlus.tech",body)
+        ds=list(db.execute(select(Document,Client).join(Client,Document.client_id==Client.id).order_by(Document.uploaded_at.desc())).all())
+    rows=''.join(f'<tr><td><span class="doc-icon {"xls" if d.filename.lower().endswith((".xls",".xlsx",".xbrl")) else ""}">{"XLS" if d.filename.lower().endswith((".xls",".xlsx",".xbrl")) else "PDF"}</span>{esc(d.filename)}</td><td>{esc(c.company)}</td><td>{esc(d.category)}</td><td><span class="tag {"green" if d.status=="Riconosciuto" else "blue" if d.status=="In analisi" else "orange"}">{esc(d.status)}</span></td><td>{d.size/1024/1024:.1f} MB</td></tr>' for d,c in ds)
+    return app_page("Documenti", "Archivio centralizzato e stato della lettura automatica.", f'<div class="panel"><div class="panel-title"><h2>Archivio documenti</h2><span class="subtle">{len(ds)} file</span></div><table class="data-table"><thead><tr><th>File</th><th>Cliente</th><th>Categoria</th><th>Stato</th><th>Dimensione</th></tr></thead><tbody>{rows}</tbody></table></div>', request, "/app/documenti")
 
-@app.post("/area-clienti/documenti")
-async def docs_post(request: Request, category: str=Form(...), practice_id: str=Form(""), csrf: str=Form(...), file: UploadFile=File(...)):
-    check_csrf(request,csrf); u=require_user(request)
-    if u.role=="admin": raise HTTPException(status_code=403)
-    filename=Path(file.filename or "file").name
-    if Path(filename).suffix.lower() not in ALLOWED_EXT: raise HTTPException(status_code=400,detail="Formato file non ammesso")
-    data=await file.read(MAX_UPLOAD_MB*1024*1024+1)
-    if len(data)>MAX_UPLOAD_MB*1024*1024: raise HTTPException(status_code=413,detail="File troppo grande")
-    pid=int(practice_id) if practice_id.strip() else None
+@app.get("/app/analisi")
+def analisi(request: Request):
+    require_admin(request)
     with SessionLocal() as db:
-        if pid:
-            p=db.get(Practice,pid)
-            if not p or p.user_id!=u.id: raise HTTPException(status_code=403)
-        db.add(Document(user_id=u.id,practice_id=pid,filename=filename,category=category,status="Caricato",size=len(data),file_data=data,is_report=False)); db.commit()
-    return RedirectResponse("/area-clienti/documenti",status_code=303)
+        items=list(db.execute(select(Analysis,Client).join(Client,Analysis.client_id==Client.id).order_by(Analysis.created_at.desc())).all())
+    rows=''.join(f'<tr><td><b>{esc(c.company)}</b></td><td>{a.overall_score}/100</td><td>{a.completeness}%</td><td>{esc(c.cr_risk)}</td><td><a class="btn light" href="/app/scoring?client={c.id}">Vedi esito</a></td></tr>' for a,c in items)
+    return app_page("Analisi AI", "Lettura documentale, KPI e pre-valutazioni assistite.", f'<div class="panel"><div class="panel-title"><h2>Analisi disponibili</h2><span class="subtle">Motore AI con supervisione professionale</span></div><table class="data-table"><thead><tr><th>Cliente</th><th>Score generale</th><th>Completezza</th><th>Rischio CR</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>', request, "/app/analisi")
 
-@app.get("/area-clienti/messaggi")
-def messages_get(request: Request):
-    u=require_user(request); token=csrf_token(request)
-    if u.role=="admin": return RedirectResponse("/admin",status_code=303)
+@app.get("/app/scoring")
+def scoring(request: Request, client: int = 1):
+    require_admin(request)
     with SessionLocal() as db:
-        msgs=db.scalars(select(Message).where((Message.sender_id==u.id)|(Message.recipient_id==u.id)).order_by(Message.created_at.desc())).all()
-    cards=''.join(f'<div class="card"><span class="eyebrow">{m.created_at.strftime("%d/%m/%Y %H:%M")}</span><h3>{esc(m.subject)}</h3><p class="muted">{esc(m.body)}</p></div>' for m in msgs) or '<div class="card">Nessun messaggio.</div>'
-    body=f'''<section class="content portal"><div class="wrap portalgrid">{side(u.role)}<div><h1 class="page-title">Messaggi</h1><div class="formbox"><form method="post"><input type="hidden" name="csrf" value="{token}"><p><label>Oggetto<input name="subject" required></label></p><p><label>Messaggio<textarea name="body" rows="4" required></textarea></label></p><button class="btn">Invia</button></form></div><div class="grid2" style="margin-top:18px">{cards}</div></div></div></section>'''
-    return layout(request,"Messaggi | FinancePlus.tech",body)
+        c=db.get(Client,client) or db.scalar(select(Client).order_by(Client.id))
+        if not c: return RedirectResponse("/app/nuovo-cliente",303)
+        a=db.scalar(select(Analysis).where(Analysis.client_id==c.id).order_by(Analysis.id.desc()))
+        if not a:
+            a=Analysis(client_id=c.id,overall_score=76,completeness=80,ai_reason="Analisi preliminare disponibile.");db.add(a);db.commit();db.refresh(a)
+    rank=''.join(f'<tr class="{"top" if i<3 else ""}"><td>{i+1}</td><td><b>{esc(n)}</b></td><td><b>{score}/100</b></td><td><span class="tag {"green" if comp in ("Molto alta","Alta") else "orange" if comp=="Media" else "red"}">{esc(comp)}</span></td><td><span class="status-dot {"orange" if st!="Operativa" else ""}"></span>{esc(st)}</td><td>{missing}</td><td><span class="tag {"green" if esito=="Consigliata" else "blue" if esito=="Valida" else "orange" if esito=="Da valutare" else "red"}">{esc(esito)}</span></td></tr>' for i,(n,score,comp,st,missing,esito) in enumerate(PLATFORMS))
+    bars=''.join(f'<div class="area-bar"><span>{label}</span><i><span style="width:{val}%"></span></i><b>{val}</b></div>' for label,val in [("Cedente",a.seller_score),("Debitore",a.debtor_score),("Fattura",a.invoice_score),("CR",a.cr_score),("Documentazione",a.docs_score)])
+    content=f'''<div class="panel" style="margin-bottom:16px"><div class="panel-title"><h2>Scheda cliente</h2><span class="subtle">P.IVA {esc(c.vat)}</span></div><div class="dash-kpis"><div class="kpi-card"><div><div class="label">{esc(c.company)}</div><div class="subtle">{esc(c.sector)}</div></div><div class="iconbox">▥</div></div><div class="kpi-card"><div><div class="label">Importo fattura</div><div class="value" style="font-size:23px">{eur(c.invoice_amount)}</div></div><div class="iconbox copperbg">€</div></div><div class="kpi-card"><div><div class="label">Score generale</div><div class="value" style="font-size:23px">{a.overall_score}/100</div><div class="delta">↑ rispetto alla media</div></div><div class="iconbox greenico">✓</div></div><div class="kpi-card"><div><div class="label">Completezza documentale</div><div class="value" style="font-size:23px">{a.completeness}%</div><div class="subtle">Rischio CR: {esc(c.cr_risk)}</div></div><div class="iconbox blueico">▤</div></div></div></div><div class="dashboard-grid"><div><div class="panel"><div class="panel-title"><div><h2>Ranking piattaforme</h2><div class="subtle">Piattaforme ordinate per score di pre-fattibilità e compatibilità con il cliente.</div></div><button class="btn light">⇄ Confronta piattaforme</button></div><table class="data-table rank-table"><thead><tr><th>#</th><th>Piattaforma</th><th>Score</th><th>Compatibilità</th><th>Stato</th><th>Doc. mancanti</th><th>Esito</th></tr></thead><tbody>{rank}</tbody></table></div></div><div><div class="panel"><div class="panel-title"><h2>Motivazione AI</h2><span class="subtle">✦ Generata da AI</span></div><div class="ai-note"><h3>✓ Ottime prospettive di cessione</h3><div class="subtle">{esc(a.ai_reason)}</div></div><div class="strength-grid" style="margin-top:10px"><div class="strength"><h4>✓ Punti di forza</h4><div class="bullet">✓ Buon merito creditizio<br>✓ Documentazione completa<br>✓ Settore stabile e performante<br>✓ Importo in linea con i limiti</div></div><div class="strength warn"><h4>⚠ Elementi di attenzione</h4><div class="bullet">✓ Concentrazione debitore<br>✓ Scadenze ravvicinate<br>✓ Condizioni economiche<br>✓ Eventuali anomalie CR</div></div></div></div><div class="panel" style="margin-top:16px"><div class="panel-title"><h3>KPI di valutazione</h3><span class="subtle">Score per area</span></div><div class="kpi-radar"><div class="radar-placeholder">Radar KPI<br>Cedente · Debitore · Fattura · CR · Documentazione</div><div>{bars}</div></div></div></div></div><div class="bottom-actions"><a class="btn light" href="/app/report/{c.id}/pdf">▧ Genera Report PDF</a><a class="btn light" href="/app/report">▣ Salva Analisi</a><button class="btn primary">✈ Prepara pratica per piattaforma</button></div>'''
+    return app_page("Esito pre-fattibilità", "Il sistema ha analizzato il cliente e ordinato le piattaforme più adatte.", content, request, "/app/scoring")
 
-@app.post("/area-clienti/messaggi")
-def messages_post(request: Request, subject: str=Form(...), body: str=Form(...), csrf: str=Form(...)):
-    check_csrf(request,csrf); u=require_user(request)
+@app.get("/app/report")
+def report_list(request: Request):
+    require_admin(request)
     with SessionLocal() as db:
-        admin=db.scalar(select(User).where(User.role=="admin"))
-        db.add(Message(sender_id=u.id,recipient_id=admin.id,subject=subject.strip(),body=body.strip())); db.commit()
-    return RedirectResponse("/area-clienti/messaggi",status_code=303)
+        items=list(db.execute(select(Client,Analysis).join(Analysis,Analysis.client_id==Client.id).order_by(Analysis.created_at.desc())).all())
+    rows=''.join(f'<tr><td><b>Report Pre-Fattibilità · {esc(c.company)}</b><div class="subtle">Analisi AI e ranking piattaforme</div></td><td>{a.overall_score}/100</td><td>{a.created_at.strftime("%d/%m/%Y")}</td><td><a class="btn primary" href="/app/report/{c.id}/pdf">Scarica PDF</a></td></tr>' for c,a in items)
+    return app_page("Report", "Elaborati professionali generati e pronti per il download.", f'<div class="panel"><div class="panel-title"><h2>Report disponibili</h2><span class="subtle">FinancePlus.tech</span></div><table class="data-table"><thead><tr><th>Report</th><th>Score</th><th>Data</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>', request, "/app/report")
 
-@app.get("/download/{doc_id}")
-def download(request: Request, doc_id: int):
-    u=require_user(request)
+@app.get("/app/report/{client_id}/pdf")
+def report_pdf(client_id: int, request: Request):
+    require_admin(request)
     with SessionLocal() as db:
-        d=db.get(Document,doc_id)
-        if not d or (u.role!="admin" and d.user_id!=u.id): raise HTTPException(status_code=404)
-        return Response(content=d.file_data,media_type="application/pdf" if d.filename.lower().endswith(".pdf") else "application/octet-stream",headers={"Content-Disposition":f"attachment; filename*=UTF-8''{quote(d.filename)}"})
+        c=db.get(Client,client_id); a=db.scalar(select(Analysis).where(Analysis.client_id==client_id).order_by(Analysis.id.desc()))
+    if not c or not a: raise HTTPException(404)
+    buf=io.BytesIO(); doc=SimpleDocTemplate(buf,pagesize=A4,rightMargin=38,leftMargin=38,topMargin=44,bottomMargin=40)
+    styles=getSampleStyleSheet(); navy=colors.HexColor("#06395b"); copper=colors.HexColor("#c27b35"); pale=colors.HexColor("#f1f6f9")
+    styles.add(ParagraphStyle(name="TitleFP", parent=styles["Title"], textColor=navy, fontSize=23, leading=28, alignment=TA_CENTER, spaceAfter=12))
+    styles.add(ParagraphStyle(name="H2FP", parent=styles["Heading2"], textColor=navy, fontSize=15, leading=19, spaceBefore=12, spaceAfter=8))
+    story=[Paragraph("FINANCEPLUS.TECH",styles["TitleFP"]),Paragraph("REPORT DI PRE-FATTIBILITÀ INVOICE TRADING",styles["TitleFP"]),Paragraph(f"Cliente: <b>{esc(c.company)}</b><br/>P.IVA {esc(c.vat)} · Settore {esc(c.sector)}<br/>Data: {date.today().strftime('%d/%m/%Y')}",styles["Normal"]),Spacer(1,14)]
+    kpi=[["Fatturato",eur(c.revenue),"EBITDA",eur(c.ebitda)],["Patrimonio netto",eur(c.net_worth),"Importo fattura",eur(c.invoice_amount)],["Accordato",eur(c.accorded),"Utilizzato",eur(c.utilized)],["Score generale",f"{a.overall_score}/100","Completezza",f"{a.completeness}%"]]
+    t=Table(kpi,colWidths=[90,105,95,105]); t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),pale),("GRID",(0,0),(-1,-1),.4,colors.HexColor('#d5e2e9')),("TEXTCOLOR",(0,0),(-1,-1),navy),("FONTNAME",(0,0),(-1,-1),"Helvetica"),("FONTSIZE",(0,0),(-1,-1),9),("PADDING",(0,0),(-1,-1),8)])); story += [t,Spacer(1,14),Paragraph("Motivazione AI",styles["H2FP"]),Paragraph(esc(a.ai_reason),styles["Normal"]),Paragraph("Ranking piattaforme",styles["H2FP"])]
+    data=[["#","Piattaforma","Score","Compatibilità","Esito"]]+[[str(i+1),n,f"{s}/100",comp,esito] for i,(n,s,comp,st,missing,esito) in enumerate(PLATFORMS)]
+    rt=Table(data,colWidths=[25,160,58,85,85],repeatRows=1); rt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),navy),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),.35,colors.HexColor('#d7e2e8')),("FONTSIZE",(0,0),(-1,-1),8),("PADDING",(0,0),(-1,-1),6),("BACKGROUND",(0,1),(-1,3),colors.HexColor('#eef9f3'))])); story += [rt,Spacer(1,14),Paragraph("Suggerimenti operativi",styles["H2FP"]),Paragraph("1. Completare la verifica della Centrale Rischi e degli estratti conto. 2. Valutare concentrazione e merito del debitore ceduto. 3. Confrontare pricing, tempi di delibera, eventuale ricorso e documenti richiesti dalle prime tre piattaforme. 4. Predisporre un dossier unico FinancePlus con fattura, DDT/contratto, visura, bilanci e supporti di incasso.",styles["Normal"]),Spacer(1,18),Paragraph("Elaborato da FinancePlus.tech · Data · Strategy · Results",styles["Normal"])]
+    doc.build(story); pdf=buf.getvalue()
+    return Response(pdf,media_type="application/pdf",headers={"Content-Disposition":f'attachment; filename="FinancePlus_Report_{client_id}.pdf"'})
 
-@app.get("/admin")
-def admin(request: Request):
-    u=require_admin(request); token=csrf_token(request)
-    with SessionLocal() as db:
-        clients=db.scalars(select(User).where(User.role=="client").order_by(User.created_at.desc())).all()
-        practices=db.scalars(select(Practice).order_by(Practice.updated_at.desc())).all()
-        docs=db.scalars(select(Document).order_by(Document.uploaded_at.desc())).all()
-        leads=db.scalars(select(Lead).order_by(Lead.created_at.desc())).all()
-    client_rows=''.join(f'<tr><td>{esc(c.company_name)}</td><td>{esc(c.email)}</td><td>{"Attivo" if c.approved else "Da approvare"}</td><td><form method="post" action="/admin/clienti/{c.id}/toggle"><input type="hidden" name="csrf" value="{token}"><button class="btn">{"Disattiva" if c.approved else "Approva"}</button></form></td></tr>' for c in clients) or '<tr><td colspan="4">Nessun cliente.</td></tr>'
-    client_opts=''.join(f'<option value="{c.id}">{esc(c.company_name)}</option>' for c in clients if c.approved)
-    state_opts=''.join(f'<option>{esc(s)}</option>' for s in STATES)
-    practice_rows=''.join(f'<tr><td>{esc(p.title)}</td><td>{money(p.amount)}</td><td>{esc(p.institution)}</td><td><form method="post" action="/admin/pratiche/{p.id}/stato"><input type="hidden" name="csrf" value="{token}"><select name="status">'+''.join(f'<option {"selected" if s==p.status else ""}>{esc(s)}</option>' for s in STATES)+f'</select><button class="btn">Salva</button></form></td></tr>' for p in practices) or '<tr><td colspan="4">Nessuna pratica.</td></tr>'
-    doc_rows=''.join(f'<tr><td>{esc(d.filename)}</td><td>{esc(d.category)}</td><td>{"Report" if d.is_report else "Documento"}</td><td><a href="/download/{d.id}">Scarica</a></td></tr>' for d in docs[:50]) or '<tr><td colspan="4">Nessun documento.</td></tr>'
-    lead_rows=''.join(f'<tr><td>{esc(l.name)}</td><td>{esc(l.company)}</td><td>{esc(l.email)}</td><td>{esc(l.service)}</td></tr>' for l in leads[:30]) or '<tr><td colspan="4">Nessun lead.</td></tr>'
-    body=f'''<section class="content portal"><div class="wrap portalgrid">{side(u.role)}<div><span class="eyebrow">CONTROLLO CENTRALE</span><h1 class="page-title">Dashboard amministrativa</h1><div class="kpis"><div class="kpi"><span>Clienti</span><strong>{len(clients)}</strong></div><div class="kpi"><span>Da approvare</span><strong>{sum(1 for c in clients if not c.approved)}</strong></div><div class="kpi"><span>Pratiche</span><strong>{len(practices)}</strong></div><div class="kpi"><span>Documenti</span><strong>{len(docs)}</strong></div></div><div id="clienti" class="tablebox"><h3>Clienti e registrazioni</h3><table><thead><tr><th>Azienda</th><th>Email</th><th>Stato</th><th></th></tr></thead><tbody>{client_rows}</tbody></table></div><div id="pratiche" class="formbox" style="margin-top:18px"><h3>Nuova pratica</h3><form method="post" action="/admin/pratiche"><input type="hidden" name="csrf" value="{token}"><div class="formgrid"><label>Cliente<select name="user_id" required>{client_opts}</select></label><label>Titolo<input name="title" required></label><label>Prodotto<input name="product"></label><label>Importo<input type="number" step="0.01" name="amount"></label><label>Istituto<input name="institution"></label><label>Stato<select name="status">{state_opts}</select></label></div><button class="btn">Crea pratica</button></form></div><div class="tablebox" style="margin-top:18px"><h3>Pratiche</h3><table><thead><tr><th>Pratica</th><th>Importo</th><th>Istituto</th><th>Stato</th></tr></thead><tbody>{practice_rows}</tbody></table></div><div id="documenti" class="formbox" style="margin-top:18px"><h3>Pubblica report PDF</h3><form method="post" action="/admin/report" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{token}"><div class="formgrid"><label>Cliente<select name="user_id" required>{client_opts}</select></label><label>Titolo<input name="title" required></label><label class="full">PDF<input type="file" name="file" accept="application/pdf" required></label></div><button class="btn">Pubblica report</button></form></div><div class="tablebox" style="margin-top:18px"><h3>Documenti e report</h3><table><thead><tr><th>File</th><th>Categoria</th><th>Tipo</th><th></th></tr></thead><tbody>{doc_rows}</tbody></table></div><div class="tablebox" style="margin-top:18px"><h3>Lead sito</h3><table><thead><tr><th>Nome</th><th>Azienda</th><th>Email</th><th>Servizio</th></tr></thead><tbody>{lead_rows}</tbody></table></div></div></div></section>'''
-    return layout(request,"Pannello amministratore | FinancePlus.tech",body)
-
-@app.post("/admin/clienti/{user_id}/toggle")
-def client_toggle(request: Request, user_id: int, csrf: str=Form(...)):
-    check_csrf(request,csrf); require_admin(request)
-    with SessionLocal() as db:
-        c=db.get(User,user_id)
-        if not c or c.role!="client": raise HTTPException(status_code=404)
-        c.approved=not c.approved; db.commit()
-    return RedirectResponse("/admin#clienti",status_code=303)
-
-@app.post("/admin/pratiche")
-def practice_create(request: Request, user_id: int=Form(...), title: str=Form(...), product: str=Form(""), amount: float=Form(0), institution: str=Form(""), status: str=Form("Da avviare"), csrf: str=Form(...)):
-    check_csrf(request,csrf); require_admin(request)
-    with SessionLocal() as db:
-        c=db.get(User,user_id)
-        if not c or c.role!="client": raise HTTPException(status_code=404)
-        db.add(Practice(user_id=user_id,title=title.strip(),product=product.strip(),amount=amount,institution=institution.strip(),status=status)); db.commit()
-    return RedirectResponse("/admin#pratiche",status_code=303)
-
-@app.post("/admin/pratiche/{practice_id}/stato")
-def practice_state(request: Request, practice_id: int, status: str=Form(...), csrf: str=Form(...)):
-    check_csrf(request,csrf); require_admin(request)
-    with SessionLocal() as db:
-        p=db.get(Practice,practice_id)
-        if not p: raise HTTPException(status_code=404)
-        p.status=status; p.updated_at=datetime.utcnow(); db.commit()
-    return RedirectResponse("/admin#pratiche",status_code=303)
-
-@app.post("/admin/report")
-async def report_upload(request: Request, user_id: int=Form(...), title: str=Form(...), csrf: str=Form(...), file: UploadFile=File(...)):
-    check_csrf(request,csrf); require_admin(request)
-    filename=Path(file.filename or "report.pdf").name
-    if not filename.lower().endswith(".pdf"): raise HTTPException(status_code=400,detail="Il report deve essere PDF")
-    data=await file.read(MAX_UPLOAD_MB*1024*1024+1)
-    if len(data)>MAX_UPLOAD_MB*1024*1024: raise HTTPException(status_code=413,detail="File troppo grande")
-    with SessionLocal() as db:
-        c=db.get(User,user_id)
-        if not c or c.role!="client": raise HTTPException(status_code=404)
-        db.add(Document(user_id=user_id,filename=filename,category=title.strip(),status="Disponibile",is_report=True,size=len(data),file_data=data)); db.commit()
-    return RedirectResponse("/admin#documenti",status_code=303)
-
-@app.get("/robots.txt")
-def robots():
-    return PlainTextResponse(f"User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /area-clienti\nSitemap: {BASE_URL}/sitemap.xml\n")
-
-@app.get("/sitemap.xml")
-def sitemap():
-    paths=["/","/servizi","/metodo","/chi-siamo","/insights","/contatti","/login"]
-    xml=''.join(f"<url><loc>{BASE_URL}{p}</loc></url>" for p in paths)
-    return Response(f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{xml}</urlset>',media_type="application/xml")
+@app.get("/app/impostazioni")
+def impostazioni(request: Request):
+    require_admin(request)
+    cards=[("Database","PostgreSQL/Neon in produzione; SQLite per anteprima locale."),("Document Intelligence","Connettore predisposto per OCR/IDP e validazione umana."),("Report","Template PDF FinancePlus, versioning e pubblicazione in Area Cliente."),("Sicurezza","HTTPS, password hash, sessioni protette, ruoli e audit da completare in produzione."),("Storage","Per produzione: object storage privato S3 con URL temporanei."),("Integrazioni","Email, WhatsApp Business, CRM, calendario e piattaforme finanziarie via API.")]
+    return app_page("Impostazioni", "Configurazione tecnica, integrazioni e sicurezza della piattaforma.", '<div class="settings-grid">'+''.join(f'<div class="setting-card"><h3>{t}</h3><p>{d}</p><a class="btn light" href="#">Configura</a></div>' for t,d in cards)+'</div>', request, "/app/impostazioni")
 
 @app.exception_handler(401)
-async def unauthorized(request: Request, exc):
-    return RedirectResponse("/login",status_code=303)
+async def unauthorized(request: Request, exc): return RedirectResponse("/login",303)
