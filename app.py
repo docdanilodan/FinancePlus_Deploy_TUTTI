@@ -287,8 +287,10 @@ def app_page(title: str, subtitle: str, content: str, request: Request, active: 
 def health(): return {"status":"ok","version":APP_VERSION}
 
 @app.get("/meta-business", include_in_schema=False)
-def meta_business():
-    html_doc = """<!doctype html>
+def meta_business(request: Request):
+    origin = str(request.base_url).rstrip("/")
+    page_url = f"{origin}/meta-business"
+    html_doc = f"""<!doctype html>
 <html lang="it">
 <head>
 <meta charset="utf-8">
@@ -300,8 +302,8 @@ def meta_business():
 <meta property="og:site_name" content="FinancePlus.tech">
 <meta property="og:title" content="FinancePlus.tech - Business Website">
 <meta property="og:description" content="Advisory d'impresa, strategia, gestione e credito.">
-<meta property="og:url" content="https://financeplus.tech/meta-business">
-<link rel="canonical" href="https://financeplus.tech/meta-business">
+<meta property="og:url" content="{esc(page_url)}">
+<link rel="canonical" href="{esc(page_url)}">
 </head>
 <body>
 <main>
@@ -310,7 +312,6 @@ def meta_business():
 <p>Consulenza integrata per la strategia, la gestione e il credito.</p>
 <p>Financeplus S.r.l. - P.IVA 04825280615</p>
 <p><a href="mailto:d.dangelo@financeplus.tech">d.dangelo@financeplus.tech</a></p>
-<p><a href="https://financeplus.tech/">Vai al sito principale</a></p>
 </main>
 </body>
 </html>"""
