@@ -197,10 +197,15 @@ async def production_security(request: Request, call_next):
                 return Response("Origine richiesta non valida", status_code=403)
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'")
+    private_prefixes = ("/app", "/admin", "/login", "/registrazione", "/logout")
+    is_private = request.url.path.startswith(private_prefixes)
+    if is_private:
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'")
+    else:
+        response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'self'")
     if APP_ENV == "production":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
@@ -280,6 +285,10 @@ def app_page(title: str, subtitle: str, content: str, request: Request, active: 
 
 @app.get("/health")
 def health(): return {"status":"ok","version":APP_VERSION}
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(str(Path(__file__).parent / "static" / "logo.png"), media_type="image/png")
 
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
