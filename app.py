@@ -286,6 +286,43 @@ def app_page(title: str, subtitle: str, content: str, request: Request, active: 
 @app.get("/health")
 def health(): return {"status":"ok","version":APP_VERSION}
 
+@app.get("/meta-business", include_in_schema=False)
+def meta_business():
+    html_doc = """<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="index,follow">
+<title>FinancePlus.tech - Business Website</title>
+<meta name="description" content="FinancePlus.tech - Advisory d'impresa, strategia, gestione e credito.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FinancePlus.tech">
+<meta property="og:title" content="FinancePlus.tech - Business Website">
+<meta property="og:description" content="Advisory d'impresa, strategia, gestione e credito.">
+<meta property="og:url" content="https://financeplus.tech/meta-business">
+<link rel="canonical" href="https://financeplus.tech/meta-business">
+</head>
+<body>
+<main>
+<h1>FinancePlus.tech</h1>
+<h2>Advisory d'impresa</h2>
+<p>Consulenza integrata per la strategia, la gestione e il credito.</p>
+<p>Financeplus S.r.l. - P.IVA 04825280615</p>
+<p><a href="mailto:d.dangelo@financeplus.tech">d.dangelo@financeplus.tech</a></p>
+<p><a href="https://financeplus.tech/">Vai al sito principale</a></p>
+</main>
+</body>
+</html>"""
+    return HTMLResponse(
+        html_doc,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return FileResponse(str(Path(__file__).parent / "static" / "logo.png"), media_type="image/png")
