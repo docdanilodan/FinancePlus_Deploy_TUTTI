@@ -235,18 +235,18 @@ def require_admin(request: Request) -> User:
     if u.role != "admin": raise HTTPException(403)
     return u
 
-def page(title: str, body: str, request: Request, description: str = "FinancePlus.tech - Advisory d\'impresa") -> HTMLResponse:
+def page(title: str, body: str, request: Request, description: str = "FinancePlus.tech - Advisory d'impresa") -> HTMLResponse:
     u = current_user(request)
-    nav = "".join(f\'<a href="{href}">{label}</a>\' for href,label in PUBLIC_NAV)
-    auth = f\'<a href="/app">Area Privata</a><a href="/logout">Esci</a>\' if u else \'<a href="/login">Area Clienti</a>\'
+    nav = "".join(f'<a href="{href}">{label}</a>' for href,label in PUBLIC_NAV)
+    auth = f'<a href="/app">Area Privata</a><a href="/logout">Esci</a>' if u else '<a href="/login">Area Clienti</a>'
     page_title = f"{title} | FinancePlus.tech"
     canonical_path = request.url.path if request.url.path else "/"
     canonical_url = f"{BASE_URL}{canonical_path}"
     meta_verification = (
-        f\'<meta name="facebook-domain-verification" content="{esc(META_DOMAIN_VERIFICATION)}">\'
+        f'<meta name="facebook-domain-verification" content="{esc(META_DOMAIN_VERIFICATION)}">'
         if META_DOMAIN_VERIFICATION else ""
     )
-    return HTMLResponse(f\'\'\'<!doctype html><html lang="it"><head>
+    return HTMLResponse(f'''<!doctype html><html lang="it"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="{esc(description)}">
@@ -295,12 +295,11 @@ Sitemap: {BASE_URL}/sitemap.xml
 def sitemap_xml():
     urls = [href for href, _ in PUBLIC_NAV]
     items = "".join(
-        f"<url><loc>{esc(BASE_URL + (\'/\' if href == \'/\' else href))}</loc></url>"
+        f"<url><loc>{esc(BASE_URL + ('/' if href == '/' else href))}</loc></url>"
         for href in urls
     )
-    xml = f\'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>\'
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(xml, media_type="application/xml; charset=utf-8")
-
 @app.head("/", include_in_schema=False)
 @app.get("/")
 def home(request: Request):
