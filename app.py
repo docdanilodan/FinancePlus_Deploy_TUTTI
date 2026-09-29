@@ -26,6 +26,8 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "FinancePlusDemo2026!")
 CONTACT_EMAIL = os.getenv("CONTACT_EMAIL", "d.dangelo@financeplus.tech")
 PHONE = os.getenv("PHONE", "+39 329 113 5692")
 BASE_URL = os.getenv("BASE_URL", "https://financeplus.tech").rstrip("/")
+META_DOMAIN_VERIFICATION = os.getenv("META_DOMAIN_VERIFICATION", "").strip()
+SOCIAL_IMAGE_URL = os.getenv("SOCIAL_IMAGE_URL", f"{BASE_URL}/static/logo.png").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 SEED_DEMO = os.getenv("SEED_DEMO", "1" if APP_ENV != "production" else "0") == "1"
 
@@ -233,11 +235,39 @@ def require_admin(request: Request) -> User:
     if u.role != "admin": raise HTTPException(403)
     return u
 
-def page(title: str, body: str, request: Request, description: str = "FinancePlus.tech - Advisory d'impresa") -> HTMLResponse:
+def page(title: str, body: str, request: Request, description: str = "FinancePlus.tech - Advisory d\'impresa") -> HTMLResponse:
     u = current_user(request)
-    nav = "".join(f'<a href="{href}">{label}</a>' for href,label in PUBLIC_NAV)
-    auth = f'<a href="/app">Area Privata</a><a href="/logout">Esci</a>' if u else '<a href="/login">Area Clienti</a>'
-    return HTMLResponse(f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="{esc(description)}"><title>{esc(title)} | FinancePlus.tech</title><link rel="stylesheet" href="/static/app.css"></head><body>
+    nav = "".join(f\'<a href="{href}">{label}</a>\' for href,label in PUBLIC_NAV)
+    auth = f\'<a href="/app">Area Privata</a><a href="/logout">Esci</a>\' if u else \'<a href="/login">Area Clienti</a>\'
+    page_title = f"{title} | FinancePlus.tech"
+    canonical_path = request.url.path if request.url.path else "/"
+    canonical_url = f"{BASE_URL}{canonical_path}"
+    meta_verification = (
+        f\'<meta name="facebook-domain-verification" content="{esc(META_DOMAIN_VERIFICATION)}">\'
+        if META_DOMAIN_VERIFICATION else ""
+    )
+    return HTMLResponse(f\'\'\'<!doctype html><html lang="it"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="{esc(description)}">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="{esc(canonical_url)}">
+<meta property="og:locale" content="it_IT">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FinancePlus.tech">
+<meta property="og:title" content="{esc(page_title)}">
+<meta property="og:description" content="{esc(description)}">
+<meta property="og:url" content="{esc(canonical_url)}">
+<meta property="og:image" content="{esc(SOCIAL_IMAGE_URL)}">
+<meta property="og:image:alt" content="FinancePlus.tech - Data Strategy Results">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{esc(page_title)}">
+<meta name="twitter:description" content="{esc(description)}">
+<meta name="twitter:image" content="{esc(SOCIAL_IMAGE_URL)}">
+{meta_verification}
+<title>{esc(page_title)}</title>
+<link rel="icon" href="/static/logo.png">
+<link rel="stylesheet" href="/static/app.css"></head><body>
 <div class="topstrip"><div class="wrap"><span>Financeplus S.r.l. · Advisory d'impresa</span><span>{esc(PHONE)} &nbsp; | &nbsp; {esc(CONTACT_EMAIL)}</span></div></div>
 <header class="sitehead"><div class="wrap nav"><a class="brand" href="/"><img src="/static/logo.png"><span class="brandtext"><span class="name">FinancePlus.tech</span><span class="pay">DATA · STRATEGY · RESULTS</span></span></a><nav>{nav}{auth}<a class="btn primary" href="/contatti">Richiedi consulenza</a></nav></div></header>
 <main>{body}</main>
@@ -246,10 +276,30 @@ def page(title: str, body: str, request: Request, description: str = "FinancePlu
 def app_page(title: str, subtitle: str, content: str, request: Request, active: str) -> HTMLResponse:
     u = require_user(request)
     nav = "".join(f'<a class="{"active" if href==active else ""}" href="{href}"><b class="navico">{ico}</b><span>{label}</span></a>' for href,ico,label in APP_NAV)
-    return HTMLResponse(f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} | FinancePlus Platform</title><link rel="stylesheet" href="/static/app.css"></head><body class="app-shell"><div class="app-topline">FinancePlus Platform ULTIMATE 4.0 · Private Workspace</div><div class="app-layout"><aside class="sidebar"><div class="sidebrand"><img src="/static/logo.png"><span><strong>FinancePlus AI</strong><small>Advisory & Credit Intelligence</small></span></div><nav class="sidenav">{nav}</nav><div class="sidefoot">Dati, analisi, opportunità.<br>Più valore al tuo business.</div></aside><main class="app-main"><header class="app-header"><div class="app-title"><h1>{esc(title)}</h1><p>{esc(subtitle)}</p></div><input class="searchbox" placeholder="⌕ Cerca clienti, documenti, report..."><div class="userbox"><div class="avatar">DD</div><div><b>{esc(u.display_name or u.email)}</b><small>{'Amministratore' if u.role=='admin' else 'Cliente'}</small></div><a href="/logout">⌄</a></div></header><section class="app-content">{content}</section></main></div></body></html>''')
+    return HTMLResponse(f'''<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>{esc(title)} | FinancePlus Platform</title><link rel="icon" href="/static/logo.png"><link rel="stylesheet" href="/static/app.css"></head><body class="app-shell"><div class="app-topline">FinancePlus Platform ULTIMATE 4.0 · Private Workspace</div><div class="app-layout"><aside class="sidebar"><div class="sidebrand"><img src="/static/logo.png"><span><strong>FinancePlus AI</strong><small>Advisory & Credit Intelligence</small></span></div><nav class="sidenav">{nav}</nav><div class="sidefoot">Dati, analisi, opportunità.<br>Più valore al tuo business.</div></aside><main class="app-main"><header class="app-header"><div class="app-title"><h1>{esc(title)}</h1><p>{esc(subtitle)}</p></div><input class="searchbox" placeholder="⌕ Cerca clienti, documenti, report..."><div class="userbox"><div class="avatar">DD</div><div><b>{esc(u.display_name or u.email)}</b><small>{'Amministratore' if u.role=='admin' else 'Cliente'}</small></div><a href="/logout">⌄</a></div></header><section class="app-content">{content}</section></main></div></body></html>''')
 
 @app.get("/health")
 def health(): return {"status":"ok","version":APP_VERSION}
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    body = f"""User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /admin
+Sitemap: {BASE_URL}/sitemap.xml
+"""
+    return Response(body, media_type="text/plain; charset=utf-8")
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml():
+    urls = [href for href, _ in PUBLIC_NAV]
+    items = "".join(
+        f"<url><loc>{esc(BASE_URL + (\'/\' if href == \'/\' else href))}</loc></url>"
+        for href in urls
+    )
+    xml = f\'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>\'
+    return Response(xml, media_type="application/xml; charset=utf-8")
 
 @app.head("/", include_in_schema=False)
 @app.get("/")
