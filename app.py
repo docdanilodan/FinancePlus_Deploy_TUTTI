@@ -251,6 +251,7 @@ def app_page(title: str, subtitle: str, content: str, request: Request, active: 
 @app.get("/health")
 def health(): return {"status":"ok","version":APP_VERSION}
 
+@app.head("/", include_in_schema=False)
 @app.get("/")
 def home(request: Request):
     cards = "".join(f'<article class="card"><span class="mini-badge">AREA DI INTERVENTO</span><h3>{esc(t)}</h3><p>{esc(d)}</p><span class="mini-badge">OUTPUT: {esc(o)}</span></article>' for t,d,o in SERVICES)
