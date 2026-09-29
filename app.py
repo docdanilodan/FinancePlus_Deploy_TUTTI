@@ -330,7 +330,14 @@ def favicon():
 
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
-    body = f"""User-agent: *
+    meta_bot = "facebook" + "externalhit"
+    body = f"""User-agent: {meta_bot}
+Allow: /
+
+User-agent: Facebot
+Allow: /
+
+User-agent: *
 Allow: /
 Disallow: /app
 Disallow: /admin
