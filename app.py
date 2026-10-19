@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64, hashlib, hmac, html, io, os, secrets
+import base64, hashlib, hmac, html, io, json, os, secrets
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -28,6 +28,9 @@ PHONE = os.getenv("PHONE", "+39 329 113 5692")
 BASE_URL = os.getenv("BASE_URL", "https://financeplus.tech").rstrip("/")
 META_DOMAIN_VERIFICATION = os.getenv("META_DOMAIN_VERIFICATION", "").strip()
 SOCIAL_IMAGE_URL = os.getenv("SOCIAL_IMAGE_URL", f"{BASE_URL}/static/logo.png").strip()
+APPLE_TEAM_ID = os.getenv("APPLE_TEAM_ID", "2W9WJ8HH87").strip()
+IOS_BUNDLE_ID = os.getenv("IOS_BUNDLE_ID", "tech.financeplus.smartfplus.mobile").strip()
+IOS_APP_STORE_URL = os.getenv("IOS_APP_STORE_URL", "").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 SEED_DEMO = os.getenv("SEED_DEMO", "1" if APP_ENV != "production" else "0") == "1"
 
@@ -210,7 +213,7 @@ async def production_security(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
-PUBLIC_NAV = [("/","Home"),("/servizi","Servizi"),("/metodo","Metodo"),("/piattaforma","Piattaforma"),("/insights","Insights"),("/chi-siamo","Chi siamo"),("/contatti","Contatti")]
+PUBLIC_NAV = [("/","Home"),("/servizi","Servizi"),("/metodo","Metodo"),("/piattaforma","Piattaforma"),("/lele-k-plus","LELE_K_PLUS"),("/insights","Insights"),("/chi-siamo","Chi siamo"),("/contatti","Contatti")]
 APP_NAV = [("/app","⌂","Dashboard"),("/app/nuovo-cliente","＋","Nuovo Cliente"),("/app/clienti","♙","Clienti Salvati"),("/app/documenti","▤","Documenti"),("/app/analisi","✥","Analisi AI"),("/app/scoring","▥","Scoring Piattaforme"),("/app/report","▧","Report"),("/app/impostazioni","⚙","Impostazioni")]
 PLATFORMS = [
     ("Workinvoice",92,"Molto alta","Operativa",0,"Consigliata"),("CrescItalia",88,"Molto alta","Operativa",1,"Consigliata"),("Jacash",85,"Alta","Operativa",1,"Consigliata"),("Borsa Fatture",78,"Alta","Operativa",2,"Valida"),("PlusAdvance",72,"Media","Manutenzione",2,"Da valutare"),("Finanza.tech",68,"Media","Operativa",3,"Da valutare"),("TeamSystem Incassa Subito",61,"Media","Operativa",3,"Da valutare"),("SFIRS",54,"Bassa","Operativa",4,"Meno adatta")]
@@ -327,6 +330,69 @@ def meta_business(request: Request):
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
     return FileResponse(str(Path(__file__).parent / "static" / "logo.png"), media_type="image/png")
+
+@app.get("/.well-known/apple-app-site-association", include_in_schema=False)
+def apple_app_site_association():
+    app_id = f"{APPLE_TEAM_ID}.{IOS_BUNDLE_ID}"
+    payload = {
+        "applinks": {
+            "apps": [],
+            "details": [
+                {
+                    "appID": app_id,
+                    "paths": ["/go/app", "/go/app/*", "/open/*"],
+                }
+            ],
+        }
+    }
+    return Response(
+        json.dumps(payload, separators=(",", ":")),
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+@app.get("/go/app", include_in_schema=False)
+@app.get("/go/app/{target:path}", include_in_schema=False)
+def go_app(target: str = ""):
+    if IOS_APP_STORE_URL:
+        return RedirectResponse(IOS_APP_STORE_URL, status_code=307)
+    return RedirectResponse("/lele-k-plus?store=pending", status_code=307)
+
+@app.get("/open/{target:path}", include_in_schema=False)
+def open_app_fallback(target: str):
+    suffix = quote(target.strip("/"), safe="/")
+    return RedirectResponse(f"/go/app/{suffix}" if suffix else "/go/app", status_code=307)
+
+@app.get("/lele-k-plus")
+def lele_k_plus(request: Request, store: str = ""):
+    store_note = (
+        '<div class="notice ok">App Store configurato: il pulsante apre l\'app se installata oppure porta allo store.</div>'
+        if IOS_APP_STORE_URL
+        else '<div class="notice">Il collegamento con LELE_K_PLUS e pronto. La pubblicazione App Store resta separata e verra attivata solo con URL ufficiale verificato.</div>'
+    )
+    store_action = (
+        '<a class="btn primary" href="/go/app">Apri / Scarica LELE_K_PLUS</a>'
+        if IOS_APP_STORE_URL
+        else '<a class="btn primary" href="/go/app">Apri LELE_K_PLUS</a><a class="btn light" href="/registrazione">Richiedi accesso</a>'
+    )
+    body = f'''<section class="hero"><div class="wrap grid"><div>
+    <span class="eyebrow">LELE_K_PLUS · FINANCEPLUS MOBILE</span>
+    <h1>FinancePlus sempre con la tua impresa.</h1>
+    <p>Cliente 360, pratiche, documenti e SERAFINO collegati al sistema FinancePlus, con accessi e permessi controllati.</p>
+    <div class="actions">{store_action}<a class="btn light" href="/piattaforma">Scopri la piattaforma</a></div>
+    {store_note}
+    </div><div class="hero-card">
+    <span class="eyebrow">COLLEGAMENTO SICURO</span>
+    <h3>Sito, app e FF+ Analysis nello stesso ecosistema</h3>
+    <p>LELE_K_PLUS non crea un archivio parallelo: usa i flussi autorizzati del sistema FinancePlus e del Cliente 360.</p>
+    <div class="trust"><div><b>Cliente 360</b>Dati e pratiche</div><div><b>SERAFINO</b>Assistenza operativa</div><div><b>Cloud</b>Accesso controllato</div></div>
+    </div></div></section>'''
+    return page(
+        "LELE_K_PLUS",
+        body,
+        request,
+        "LELE_K_PLUS - l'app FinancePlus collegata a Cliente 360, pratiche, documenti e SERAFINO.",
+    )
 
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
