@@ -366,15 +366,17 @@ def open_app_fallback(target: str):
 
 @app.get("/lele-k-plus")
 def lele_k_plus(request: Request, store: str = ""):
+    # Safari keeps same-domain links in the browser. The native Smart App
+    # Banner handles opening an installed app; the page CTA only offers the store.
     store_note = (
-        '<div class="notice ok">App Store configurato: il pulsante apre l\'app se installata oppure porta allo store.</div>'
+        '<div class="notice ok">Hai già LELE_K_PLUS? In Safari su iPhone usa “Apri” nel banner dell’app, se presente, oppure aprila dalla schermata Home.</div>'
         if IOS_APP_STORE_URL
-        else '<div class="notice">Il collegamento con LELE_K_PLUS e pronto. La pubblicazione App Store resta separata e verra attivata solo con URL ufficiale verificato.</div>'
+        else '<div class="notice">Il download dall’App Store non è disponibile da questa pagina. Se hai già LELE_K_PLUS, aprila dalla schermata Home.</div>'
     )
     store_action = (
-        '<a class="btn primary" href="/go/app">Apri / Scarica LELE_K_PLUS</a>'
+        f'<a class="btn primary" href="{esc(IOS_APP_STORE_URL)}">Scarica dall’App Store</a>'
         if IOS_APP_STORE_URL
-        else '<a class="btn primary" href="/go/app">Apri LELE_K_PLUS</a><a class="btn light" href="/registrazione">Richiedi accesso</a>'
+        else '<a class="btn primary" href="/registrazione">Richiedi accesso</a>'
     )
     body = f'''<section class="hero"><div class="wrap grid"><div>
     <span class="eyebrow">LELE_K_PLUS · FINANCEPLUS MOBILE</span>
