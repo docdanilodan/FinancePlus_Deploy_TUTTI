@@ -30,7 +30,8 @@ META_DOMAIN_VERIFICATION = os.getenv("META_DOMAIN_VERIFICATION", "").strip()
 SOCIAL_IMAGE_URL = os.getenv("SOCIAL_IMAGE_URL", f"{BASE_URL}/static/logo.png").strip()
 APPLE_TEAM_ID = os.getenv("APPLE_TEAM_ID", "2W9WJ8HH87").strip()
 IOS_BUNDLE_ID = os.getenv("IOS_BUNDLE_ID", "tech.financeplus.smartfplus.mobile").strip()
-IOS_APP_STORE_URL = os.getenv("IOS_APP_STORE_URL", "").strip()
+IOS_APP_STORE_ID = os.getenv("IOS_APP_STORE_ID", "6815794369").strip()
+IOS_APP_STORE_URL = os.getenv("IOS_APP_STORE_URL", "https://apps.apple.com/it/app/lele-k-plus/id6815794369").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "20"))
 SEED_DEMO = os.getenv("SEED_DEMO", "1" if APP_ENV != "production" else "0") == "1"
 
@@ -257,7 +258,7 @@ def page(title: str, body: str, request: Request, description: str = "FinancePlu
     return HTMLResponse(f'''<!doctype html><html lang="it"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="{esc(description)}">
+<meta name="description" content="{esc(description)}">\n<meta name="apple-itunes-app" content="app-id={esc(IOS_APP_STORE_ID)}, app-argument={esc(BASE_URL + '/go/app')}">
 <meta name="robots" content="index,follow,max-image-preview:large">
 <link rel="canonical" href="{esc(canonical_url)}">
 <meta property="og:locale" content="it_IT">
