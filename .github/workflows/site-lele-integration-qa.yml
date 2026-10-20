@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt httpx
       - name: Syntax
         run: python -m py_compile app.py
       - name: Route smoke
