@@ -6,8 +6,10 @@ services:
     region: frankfurt
     healthCheckPath: /health
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
+      - key: APP_ENV
+        value: production
       - key: SECRET_KEY
         sync: false
       - key: DATABASE_URL
@@ -22,7 +24,3 @@ services:
         value: d.dangelo@financeplus.tech
       - key: PHONE
         value: +393291135692
-      - key: MAX_UPLOAD_MB
-        value: 10
-      - key: SESSION_HTTPS_ONLY
-        value: 1
