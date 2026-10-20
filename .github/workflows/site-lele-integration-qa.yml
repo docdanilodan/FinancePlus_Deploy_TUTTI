@@ -1,0 +1,61 @@
+name: FinancePlus site LELE integration QA
+
+on:
+  push:
+    branches: [integration/lele-ffplus-20261020]
+    paths:
+      - 'app.py'
+      - 'static/**'
+      - 'requirements.txt'
+      - '.github/workflows/site-lele-integration-qa.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Syntax
+        run: python -m py_compile app.py
+      - name: Route smoke
+        env:
+          APP_ENV: development
+          DATABASE_URL: sqlite:///./qa_site.db
+          SEED_DEMO: '0'
+          BASE_URL: https://financeplus.tech
+          SECRET_KEY: qa-only-not-production-secret-value-123456789
+          IOS_APP_STORE_URL: ''
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          import app
+          c = TestClient(app.app)
+          a = c.get('/.well-known/apple-app-site-association')
+          assert a.status_code == 200, a.status_code
+          data = a.json()
+          assert data['applinks']['details'][0]['appID'] == '2W9WJ8HH87.tech.financeplus.smartfplus.mobile'
+          assert '/go/app' in data['applinks']['details'][0]['paths']
+          landing = c.get('/lele-k-plus')
+          assert landing.status_code == 200
+          assert 'LELE_K_PLUS' in landing.text
+          go = c.get('/go/app', follow_redirects=False)
+          assert go.status_code == 307
+          assert go.headers['location'] == '/lele-k-plus?store=pending'
+          opened = c.get('/open/documenti', follow_redirects=False)
+          assert opened.status_code == 307
+          assert opened.headers['location'] == '/go/app/documenti'
+          sitemap = c.get('/sitemap.xml')
+          assert sitemap.status_code == 200
+          assert '/lele-k-plus' in sitemap.text
+          print('SITE_LELE_QA_PASS')
+          PY
