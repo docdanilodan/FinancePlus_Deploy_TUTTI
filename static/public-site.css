@@ -18,3 +18,4 @@ body:has(.fp-header) main>.pagehero,body:has(.fp-header) main>.hero{background:l
 /* Keep the full brand and form controls usable on narrow phone screens. */
 @media(max-width:760px){body:has(.fp-header) .field input,body:has(.fp-header) .field select,body:has(.fp-header) .field textarea{font-size:16px;min-height:44px}}
 @media(max-width:380px){.fp-header .fp-brand>span{font-size:19px}.fp-header .fp-brand>img{width:34px;height:40px}.fp-header .fp-brand{gap:7px}.fp-header .fp-header-inner{column-gap:10px}}
+@media(min-width:1081px){.fp-hero-visual .fp-visual-caption{top:8px}}

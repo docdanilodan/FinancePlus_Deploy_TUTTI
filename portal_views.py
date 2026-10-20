@@ -185,7 +185,7 @@ def _missing_text(practice):
         return missing
     requests = _records(practice.get("document_requests"))
     if requests:
-        return f"{len(requests)} richieste documentali"
+        return "1 richiesta documentale" if len(requests) == 1 else f"{len(requests)} richieste documentali"
     return "Non indicato"
 
 
@@ -210,8 +210,10 @@ def _company_rows(data, *, limit=None):
         next_actions = [_text(p.get("next_action"), "") for p in own if p.get("next_action")]
         next_html = esc(next_actions[0]) if next_actions else "Non indicata"
         if len(next_actions) > 1:
-            next_html += f'<small>Altre {len(next_actions) - 1} azioni nelle pratiche</small>'
-        count = f'<a href="{esc(_href(client_id, tab="pratiche"))}">{len(own)} richieste</a>'
+            remaining = len(next_actions) - 1
+            next_html += '<small>Un’altra azione nelle pratiche</small>' if remaining == 1 else f'<small>Altre {remaining} azioni nelle pratiche</small>'
+        request_count = "1 richiesta" if len(own) == 1 else f"{len(own)} richieste"
+        count = f'<a href="{esc(_href(client_id, tab="pratiche"))}">{request_count}</a>'
         rows.append((label, count, status_html, next_html, button("Apri", _href(client_id), "quiet", "arrow")))
     return rows
 
@@ -390,7 +392,8 @@ def client_view(bundle, selected_tab="sintesi", base_path=None, *, selected_prac
         action += '<p class="p-print-note">Questo spazio mostra le richieste e le integrazioni documentali condivise con il tuo account.</p>'
     content = ""
     if selected_tab == "pratiche":
-        content = panel("Richieste dell’azienda", table(("Pratica", "Importo richiesto", "Stato", "Gestore", "Documenti richiesti"), _practice_rows(practices, show_company=False, selected_practice=selected_practice), f"{len(practices)} richieste disponibili"))
+        request_count = "1 richiesta disponibile" if len(practices) == 1 else f"{len(practices)} richieste disponibili"
+        content = panel("Richieste dell’azienda", table(("Pratica", "Importo richiesto", "Stato", "Gestore", "Documenti richiesti"), _practice_rows(practices, show_company=False, selected_practice=selected_practice), request_count))
         selected = next((p for p in practices if str(p.get("id")) == str(selected_practice)), None)
         if selected is not None:
             content += _practice_detail(selected)
