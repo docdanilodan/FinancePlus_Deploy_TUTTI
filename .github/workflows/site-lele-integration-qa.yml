@@ -1,3 +1,4 @@
+# Temporary QA gate for integration branch only
 name: FinancePlus site LELE integration QA
 
 on:
