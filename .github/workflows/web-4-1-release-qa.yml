@@ -1,0 +1,40 @@
+name: FinancePlus Web 4.1 release QA
+
+on:
+  push:
+    branches: [sito-finance-tech-master-2026-09-14]
+    paths:
+      - '*.py'
+      - 'portal_*.py'
+      - 'public_site.py'
+      - 'site_editor.py'
+      - 'static/**'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - '.github/workflows/web-4-1-release-qa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+      - name: Compile runtime modules
+        run: |
+          python -m compileall -q app.py public_site.py portal_*.py site_editor.py master_gateway.py auth_limits.py request_limits.py
+      - name: Run integrated suite
+        run: |
+          python -m pytest tests -q -p no:cacheprovider -o faulthandler_timeout=25 --tb=short
